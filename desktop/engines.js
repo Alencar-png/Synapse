@@ -107,6 +107,35 @@ function buildNativeEnv({ cli, modelPath, language, threads }) {
   };
 }
 
+/** Como montar o ambiente Python do motor, para a mensagem de erro. */
+const VENV_SETUP = 'python -m venv .venv && .venv\\Scripts\\pip install -e .';
+const VENV_REPAIR = '.venv\\Scripts\\pip install -e .';
+
+/** O stderr do Python acusa um pacote que não está instalado? Devolve o nome. */
+function missingModule(stderr) {
+  const m = /No module named ['"]?([\w.]+)/i.exec(String(stderr || ''));
+  return m ? m[1].split('.')[0] : '';
+}
+
+/**
+ * Traduz a última linha do stderr do Python numa mensagem que aponta a saída.
+ *
+ * Um `ModuleNotFoundError` quase sempre significa que o app caiu no Python
+ * global — não havia `.venv` na pasta do projeto — ou que o venv existe mas
+ * está incompleto. O traceback cru não diz nada disso a quem usa o app.
+ */
+function explainNativeFailure(lastError, python, code) {
+  const modulo = missingModule(lastError);
+  if (modulo) {
+    const noVenv = !/[\\/]\.venv[\\/]/.test(String(python || ''));
+    return noVenv
+      ? `O Python usado pelo motor (${python || 'python'}) não tem o pacote '${modulo}'. `
+        + `Crie o ambiente do projeto na pasta do app: ${VENV_SETUP}`
+      : `O ambiente .venv está incompleto (falta '${modulo}'). Na pasta do app, rode: ${VENV_REPAIR}`;
+  }
+  return lastError || `A transcrição terminou com erro (código ${code}).`;
+}
+
 module.exports = {
   IMAGE_NAME,
   MODELS_VOLUME,
@@ -114,6 +143,8 @@ module.exports = {
   toHostPath,
   buildNativeArgs,
   buildNativeEnv,
+  explainNativeFailure,
   listNativeModels,
+  missingModule,
   nativeStatus,
 };

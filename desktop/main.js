@@ -22,6 +22,7 @@ const {
   buildDockerArgs,
   buildNativeArgs,
   buildNativeEnv,
+  explainNativeFailure,
   nativeStatus,
   toHostPath,
 } = require('./engines');
@@ -347,7 +348,8 @@ function startJob(payload) {
 
   child.on('error', (err) => {
     currentJob = null;
-    send('job:event', { event: 'error', message: `Falha ao executar o Docker: ${err.message}` });
+    const alvo = engine === 'native' ? `o Python (${child.spawnfile})` : 'o Docker';
+    send('job:event', { event: 'error', message: `Falha ao executar ${alvo}: ${err.message}` });
   });
 
   child.on('close', (code) => {
@@ -363,7 +365,9 @@ function startJob(payload) {
     } else if (code !== 0) {
       send('job:event', {
         event: 'error',
-        message: lastError || `A transcrição terminou com erro (código ${code}).`,
+        message: engine === 'native'
+          ? explainNativeFailure(lastError, child.spawnfile, code)
+          : lastError || `A transcrição terminou com erro (código ${code}).`,
       });
     }
     send('job:closed', { code });

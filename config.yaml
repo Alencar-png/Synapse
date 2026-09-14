@@ -10,7 +10,9 @@
 #   "cpp"    -> força whisper.cpp (mais rápido com GPU; requer binário + modelo .bin)
 #   "openai" -> openai-whisper puro Python; baixa o modelo sozinho (mais simples)
 whisper_backend: "auto"
-whisper_model: "large-v3-turbo"
+# O mais fiel. "large-v3-turbo" transcreve em metade do tempo e erra mais
+# em nomes, números e no fim das frases.
+whisper_model: "large-v3"
 whisper_language: "pt"
 # "auto" deixa a lib decidir; "cuda" força GPU; "cpu" força CPU
 # (no whisper.cpp isso adiciona --no-gpu).

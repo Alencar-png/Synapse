@@ -9,6 +9,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+from .audio import audio_channels
 from .cleanup import clean_segments
 from .config import Settings
 from .models import Transcript, TranscriptSegment
@@ -76,10 +77,32 @@ def resolve_whisper_cli(config: Settings) -> Path | None:
     return None
 
 
+# Preferência entre os modelos encontrados em .models/, do melhor para o pior.
+# Espelha MODEL_PREFERENCE do app desktop (desktop/engines.js): quem escolhe
+# normalmente é a interface, mas rodar o comando na mão precisa cair no mesmo
+# modelo. Ordem alfabética não serve — ela põe "large-v3-turbo" (mais rápido,
+# menos fiel) na frente de "large-v3".
+MODEL_PREFERENCE = (
+    "large-v3", "large-v3-turbo", "large-v2", "large",
+    "medium", "small", "base", "tiny",
+)
+
+
+def model_rank(name: str) -> tuple[float, float]:
+    """Posição do modelo na preferência; o desconhecido vai para o fim."""
+    stem = name.removeprefix("ggml-").removesuffix(".bin")
+    if stem in MODEL_PREFERENCE:
+        return (MODEL_PREFERENCE.index(stem), 0.0)
+    for i, prefixo in enumerate(MODEL_PREFERENCE):
+        if stem.startswith(prefixo):
+            return (i + 0.5, 0.0)
+    return (len(MODEL_PREFERENCE), 0.0)
+
+
 def resolve_whisper_model(config: Settings) -> Path | None:
     """Localiza o modelo GGML de forma portável.
 
-    Ordem: caminho explícito na config -> primeiro ``*.bin`` em .models/.
+    Ordem: caminho explícito na config -> o modelo mais fiel em .models/.
     """
     if config.whisper_model_path:
         p = Path(config.whisper_model_path).expanduser()
@@ -89,9 +112,10 @@ def resolve_whisper_model(config: Settings) -> Path | None:
     models_dir = Path(config.project_root) / ".models"
     if models_dir.is_dir():
         # O modelo de VAD também é .bin, mas não transcreve nada.
-        models = sorted(p for p in models_dir.glob("*.bin") if not is_vad_model(p))
+        models = [p for p in models_dir.glob("*.bin") if not is_vad_model(p)]
         if models:
-            return models[0]
+            # Empate entre desconhecidos: o maior arquivo costuma ser o melhor.
+            return min(models, key=lambda p: (model_rank(p.name), -p.stat().st_size))
     return None
 
 
@@ -117,6 +141,64 @@ def resolve_vad_model(config: Settings) -> Path | None:
         if candidates:
             return candidates[0]
     return None
+
+
+def build_cpp_command(
+    *,
+    cli: Path,
+    model: Path,
+    audio_path: Path,
+    config: Settings,
+    threads: int,
+    device: str,
+    vad_model: Path | None = None,
+    diarize: bool = False,
+    with_progress: bool = False,
+) -> list[str]:
+    """Monta a linha de comando do ``whisper-cli``.
+
+    Função à parte, e pura, porque cada uma destas flags muda o resultado da
+    transcrição de um jeito que não aparece num erro: sem ``-t`` o whisper.cpp
+    usa quatro threads em qualquer CPU, sem ``--vad`` ele inventa fala no
+    silêncio, sem ``-di`` não há como saber quem falou. Um teste consegue
+    afirmar o comando inteiro sem invocar o binário.
+    """
+    cmd = [
+        str(cli),
+        "-m", str(model),
+        "-f", str(audio_path),
+        "-l", config.whisper_language,
+        "-oj",          # output JSON, com os timestamps
+        "--no-prints",  # sem logs extras no stdout
+    ]
+    # Sem -t explícito o whisper.cpp fica em 4 threads, independentemente
+    # do tamanho da CPU.
+    cmd += ["-t", str(threads)]
+    # whisper.cpp usa a GPU automaticamente quando o binário tem suporte.
+    # device=cpu força o uso de CPU explicitamente.
+    if device == "cpu":
+        cmd.append("--no-gpu")
+    # VAD: o modelo só vê os trechos com fala. Sem isso, no silêncio de uma
+    # sala esperando gente entrar ele inventa "Tchau." quinze vezes.
+    if vad_model is not None:
+        cmd += ["--vad", "--vad-model", str(vad_model)]
+        logger.info("VAD ligado: %s", vad_model.name)
+    elif config.whisper_vad:
+        logger.info("VAD pedido mas sem modelo Silero em .models/; seguindo sem VAD.")
+    # Diarização por canal: o whisper.cpp compara a energia dos dois lados em
+    # cada trecho e marca de qual veio a fala. Quem decide é quem chama, não a
+    # config: a opção pode estar ligada e o áudio ser mono, e aí não há lado
+    # nenhum a comparar. Convive com o VAD — os tempos que o whisper devolve
+    # são sempre os do áudio original.
+    if diarize:
+        cmd.append("--diarize")
+    if config.whisper_suppress_nst:
+        cmd.append("--suppress-nst")
+    if with_progress:
+        # Progresso real da etapa mais longa do pipeline, em vez de uma
+        # barra parada do começo ao fim.
+        cmd.append("--print-progress")
+    return cmd
 
 
 class WhisperTranscriber:
@@ -351,36 +433,26 @@ class WhisperTranscriber:
 
         logger.info("Transcrevendo %s com whisper.cpp...", audio_path.name)
 
-        # whisper-cli com saída JSON para pegar timestamps
-        cmd = [
-            str(cli),
-            "-m", str(model),
-            "-f", str(audio_path),
-            "-l", self.config.whisper_language,
-            "-oj",          # output JSON
-            "--no-prints",  # sem logs extras no stdout
-        ]
-        # Sem -t explícito o whisper.cpp fica em 4 threads, independentemente
-        # do tamanho da CPU.
-        cmd += ["-t", str(self._resolve_threads())]
-        # whisper.cpp usa a GPU automaticamente quando o binário tem suporte.
-        # device=cpu força o uso de CPU explicitamente.
-        if self._resolve_device() == "cpu":
-            cmd.append("--no-gpu")
-        # VAD: o modelo só vê os trechos com fala. Sem isso, no silêncio de uma
-        # sala esperando gente entrar ele inventa "Tchau." quinze vezes.
-        vad_model = resolve_vad_model(self.config) if self.config.whisper_vad else None
-        if vad_model is not None:
-            cmd += ["--vad", "--vad-model", str(vad_model)]
-            logger.info("VAD ligado: %s", vad_model.name)
-        elif self.config.whisper_vad:
-            logger.info("VAD pedido mas sem modelo Silero em .models/; seguindo sem VAD.")
-        if self.config.whisper_suppress_nst:
-            cmd.append("--suppress-nst")
-        if progress_callback:
-            # Progresso real da etapa mais longa do pipeline, em vez de uma
-            # barra parada do começo ao fim.
-            cmd.append("--print-progress")
+        # A opção liga a intenção; o áudio decide se há o que separar. Um WAV
+        # mono com --diarize faria o whisper responder "?" em toda fala.
+        diarize = self.config.whisper_diarize and audio_channels(audio_path) >= 2
+        if self.config.whisper_diarize and not diarize:
+            logger.info(
+                "Diarização pedida, mas %s tem um canal só: seguindo sem separar falantes.",
+                audio_path.name,
+            )
+
+        cmd = build_cpp_command(
+            cli=cli,
+            model=model,
+            audio_path=audio_path,
+            config=self.config,
+            threads=self._resolve_threads(),
+            device=self._resolve_device(),
+            vad_model=resolve_vad_model(self.config) if self.config.whisper_vad else None,
+            diarize=diarize,
+            with_progress=bool(progress_callback),
+        )
 
         if progress_callback:
             progress_callback(10, "Transcrevendo áudio...")
@@ -408,7 +480,13 @@ class WhisperTranscriber:
             t0 = parse_timestamp(seg.get("timestamps", {}).get("from", "00:00:00"))
             t1 = parse_timestamp(seg.get("timestamps", {}).get("to", "00:00:00"))
             text = seg.get("text", "").strip()
+            # Com --diarize o JSON traz o falante em campo próprio ("0", "1" ou
+            # "?") e deixa o texto limpo — o prefixo "(speaker N)" só aparece na
+            # saída de terminal. Sem a flag, a chave não existe.
+            speaker = str(seg.get("speaker", "") or "")
             if text:
-                segments.append(TranscriptSegment(start=t0, end=t1, text=text))
+                segments.append(
+                    TranscriptSegment(start=t0, end=t1, text=text, speaker=speaker)
+                )
 
         return self._finish(segments, progress_callback)

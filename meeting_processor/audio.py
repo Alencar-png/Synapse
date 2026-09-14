@@ -11,6 +11,10 @@ from .utils import ascii_slug
 
 logger = logging.getLogger(__name__)
 
+# Ler metadados é instantâneo; o minuto existe para o caso de o arquivo estar
+# num disco de rede que parou de responder.
+PROBE_TIMEOUT_SECONDS = 60
+
 
 def _ffmpeg_install_hint() -> str:
     """Sugestão de instalação do ffmpeg conforme o sistema operacional."""
@@ -28,6 +32,8 @@ def validate_ffmpeg() -> bool:
             ["ffmpeg", "-version"],
             capture_output=True,
             check=True,
+            encoding="utf-8",
+            errors="replace",
         )
         return True
     except (FileNotFoundError, subprocess.CalledProcessError):
@@ -47,6 +53,8 @@ def get_duration(file_path: Path) -> float:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         return float(result.stdout.strip())
@@ -55,8 +63,52 @@ def get_duration(file_path: Path) -> float:
         return 0.0
 
 
+def audio_channels(file_path: Path) -> int:
+    """Quantos canais a primeira trilha de áudio do arquivo tem.
+
+    Serve para não prometer diarização onde ela não existe: um arquivo mono
+    duplicado em dois canais tem a mesma energia dos dois lados, e o
+    whisper.cpp responde "?" em cada trecho — o que viraria "Sobreposição"
+    escrito ao lado de toda fala da reunião. Melhor não marcar nada.
+
+    Devolve 0 quando não dá para saber (arquivo sem áudio, ffprobe ausente).
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "quiet",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=channels",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(file_path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+        return int((result.stdout or "0").strip().splitlines()[0])
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return 0
+    except (ValueError, IndexError):
+        return 0
+
+
 def extract_audio(video_path: Path, config: Settings) -> Path:
-    """Extrai áudio WAV 16kHz mono do vídeo para transcrição com Whisper.
+    """Extrai áudio WAV 16kHz do vídeo para transcrição com Whisper.
+
+    Mono por padrão. Com ``whisper_diarize`` ligado, sai em estéreo: é a
+    separação entre os canais que permite ao whisper.cpp dizer de qual fonte
+    veio cada fala — o microfone de um lado, o som do sistema do outro. Rebaixar
+    para mono aqui apagaria essa informação antes de a transcrição começar, e
+    não há como recuperá-la depois.
+
+    Gravação que já é mono continua mono mesmo com a opção ligada: duplicar o
+    canal daria dois lados idênticos, e o whisper responderia "?" em toda fala
+    — uma marcação inútil ao lado de cada linha da reunião.
 
     Args:
         video_path: Caminho do arquivo de vídeo.
@@ -83,7 +135,13 @@ def extract_audio(video_path: Path, config: Settings) -> Path:
     output_path = config.temp_path / f"{ascii_slug(video_path.stem)}.{path_hash}.wav"
     config.temp_path.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Extraindo áudio de %s...", video_path.name)
+    # Estéreo só quando a gravação de fato tem dois lados para separar.
+    channels = "2" if config.whisper_diarize and audio_channels(video_path) >= 2 else "1"
+    logger.info(
+        "Extraindo áudio de %s (%s)...",
+        video_path.name,
+        "estéreo, para separar quem fala" if channels == "2" else "mono",
+    )
 
     try:
         subprocess.run(
@@ -93,12 +151,14 @@ def extract_audio(video_path: Path, config: Settings) -> Path:
                 "-vn",                  # sem vídeo
                 "-acodec", "pcm_s16le", # WAV PCM 16-bit
                 "-ar", "16000",         # 16kHz (padrão Whisper)
-                "-ac", "1",             # mono
+                "-ac", channels,        # mono, ou estéreo para a diarização
                 "-y",                   # sobrescrever se existir
                 str(output_path),
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
             timeout=config.ffmpeg_timeout,
         )

@@ -13,7 +13,9 @@ VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 class Settings(BaseModel):
     # Whisper
-    whisper_model: str = "large-v3-turbo"
+    # Vale para o backend openai-whisper (o whisper.cpp escolhe o .bin
+    # em .models/ por MODEL_PREFERENCE, em transcriber.py).
+    whisper_model: str = "large-v3"
     whisper_language: str = "pt"
     whisper_device: str = "auto"
     whisper_initial_prompt: str = "Transcrição de reunião em português brasileiro."
@@ -38,6 +40,14 @@ class Settings(BaseModel):
     whisper_vad_model_path: str = ""
     # Suprime tokens que não são fala ([MÚSICA], [APLAUSOS] etc.).
     whisper_suppress_nst: bool = True
+    # Quem falou, por canal de áudio.
+    #
+    # O whisper.cpp compara a energia dos dois canais em cada trecho e diz de
+    # qual deles a fala veio (`speaker` 0, 1 ou "?"). Isso só funciona se o
+    # áudio chegar em estéreo com uma fonte em cada canal — no app, o
+    # microfone à esquerda e o som do sistema à direita. Ligado, o áudio deixa
+    # de ser rebaixado para mono na extração.
+    whisper_diarize: bool = False
 
     # Processamento
     temp_dir: str = ".tmp"
@@ -114,15 +124,10 @@ def load_config(config_path: str | None = None) -> Settings:
         "MEETING_WHISPER_BACKEND": "whisper_backend",
         "MEETING_WHISPER_CLI_PATH": "whisper_cli_path",
         "MEETING_WHISPER_MODEL_PATH": "whisper_model_path",
+        "MEETING_WHISPER_VAD_MODEL_PATH": "whisper_vad_model_path",
         "MEETING_LOG_LEVEL": "log_level",
     }
     for env_key, config_key in string_overrides.items():
-        env_val = os.environ.get(env_key)
-        if env_val is not None and env_val != "":
-            config_data[config_key] = env_val
-
-    string_overrides["MEETING_WHISPER_VAD_MODEL_PATH"] = "whisper_vad_model_path"
-    for env_key, config_key in {"MEETING_WHISPER_VAD_MODEL_PATH": "whisper_vad_model_path"}.items():
         env_val = os.environ.get(env_key)
         if env_val is not None and env_val != "":
             config_data[config_key] = env_val
@@ -139,6 +144,7 @@ def load_config(config_path: str | None = None) -> Settings:
     bool_overrides = {
         "MEETING_WHISPER_VAD": "whisper_vad",
         "MEETING_WHISPER_SUPPRESS_NST": "whisper_suppress_nst",
+        "MEETING_WHISPER_DIARIZE": "whisper_diarize",
     }
     for env_key, config_key in bool_overrides.items():
         env_val = os.environ.get(env_key)

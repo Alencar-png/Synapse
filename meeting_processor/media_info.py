@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 # Tags de data usadas pelos gravadores mais comuns (OBS, celulares, câmeras).
 _DATE_TAGS = ("creation_time", "com.apple.quicktime.creationdate", "date")
 
+# Ler metadados é instantâneo; um minuto só existe para o caso de o arquivo
+# estar num disco de rede que parou de responder.
+PROBE_TIMEOUT_SECONDS = 60
+
 
 @dataclass(frozen=True)
 class MediaInfo:
@@ -64,8 +68,10 @@ def probe_media(path: Path) -> MediaInfo:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
-            timeout=60,
+            timeout=PROBE_TIMEOUT_SECONDS,
         )
         data = json.loads(result.stdout or "{}").get("format", {})
         duration = float(data.get("duration") or 0.0)

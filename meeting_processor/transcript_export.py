@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Transcript
+from .models import SPEAKER_LABELS, SPEAKER_MIC, SPEAKER_SYSTEM, Transcript, speaker_label
 from .utils import atomic_write_text, format_duration, format_timestamp
 
 # Formatos suportados, na ordem em que são gravados.
@@ -87,16 +87,32 @@ def to_markdown(
     ])
     if source_file:
         lines.append(f"**Arquivo:** {source_file}  ")
+    if transcript.has_speakers:
+        lines.append(
+            "**Falantes:** separados pelo canal de áudio — "
+            f"*{SPEAKER_LABELS[SPEAKER_MIC]}* é o microfone desta máquina, "
+            f"*{SPEAKER_LABELS[SPEAKER_SYSTEM]}* é o som que veio da chamada.  "
+        )
     lines.extend(["", "---", ""])
     for seg in transcript.segments:
-        lines.append(f"**[{format_timestamp(seg.start)}]** {seg.text}  ")
+        quem = speaker_label(seg.speaker)
+        # O falante entra antes do texto e depois do tempo, como numa peça: é
+        # onde quem lê procura, e é a forma que o modelo entende sem explicação
+        # quando a transcrição vira análise.
+        marca = format_timestamp(seg.start)
+        prefixo = f"**[{marca}] {quem}:**" if quem else f"**[{marca}]**"
+        lines.append(f"{prefixo} {seg.text}  ")
     return "\n".join(lines) + "\n"
 
 
 def to_txt(transcript: Transcript) -> str:
     """Transcrição em texto corrido, uma fala por linha e sem marcação."""
     if transcript.segments:
-        return "\n".join(seg.text for seg in transcript.segments) + "\n"
+        linhas = []
+        for seg in transcript.segments:
+            quem = speaker_label(seg.speaker)
+            linhas.append(f"{quem}: {seg.text}" if quem else seg.text)
+        return "\n".join(linhas) + "\n"
     return (transcript.full_text or "") + "\n"
 
 

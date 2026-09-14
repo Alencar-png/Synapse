@@ -6,6 +6,10 @@ REM Clique duas vezes neste arquivo. Na primeira execucao ele
 REM instala as dependencias do app (leva alguns minutos).
 REM ============================================================
 title Meeting Processor
+REM Variaveis locais da maquina (ex.: CLAUDE_CONFIG_DIR), uma por linha, CHAVE=VALOR.
+if exist "%~dp0.synapse-env" (
+    for /f "usebackq eol=# tokens=1* delims==" %%a in ("%~dp0.synapse-env") do set "%%a=%%b"
+)
 cd /d "%~dp0desktop"
 
 where node >nul 2>nul

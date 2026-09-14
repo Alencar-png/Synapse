@@ -27,10 +27,8 @@ test('normalizeTts completa e recusa voz ou velocidade desconhecida', () => {
   assert.deepStrictEqual(normalizeTts({ engine: 'robô', voice: 'inventada', rate: '+300%' }), DEFAULT_TTS);
   assert.strictEqual(normalizeTts({ systemVoice: 'Microsoft Maria Desktop' }).systemVoice, 'Microsoft Maria Desktop');
   assert.strictEqual(normalizeTts({ systemVoice: 42 }).systemVoice, '');
-  assert.strictEqual(normalizeTts({ engine: 'chatterbox' }).engine, 'chatterbox');
-  assert.strictEqual(normalizeTts({ refVoice: 'C:\\vozes\\eu.wav' }).refVoice, 'C:\\vozes\\eu.wav');
-  assert.strictEqual(normalizeTts({ exaggeration: 3 }).exaggeration, 1);
-  assert.strictEqual(normalizeTts({ exaggeration: 'x' }).exaggeration, 0.5);
+  // Motor que já não existe no app: cai para o padrão, e o resto é descartado.
+  assert.deepStrictEqual(normalizeTts({ engine: 'chatterbox', refVoice: 'C:\\vozes\\eu.wav', exaggeration: 0.7 }), DEFAULT_TTS);
   assert.ok(VOICES.some((v) => v.id === DEFAULT_TTS.voice));
   assert.ok(RATES.some((r) => r.id === DEFAULT_TTS.rate));
 });

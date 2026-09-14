@@ -47,6 +47,10 @@ Thumbs.db
 
 # Atalhos do Windows: guardam caminhos absolutos da máquina.
 *.lnk
-# Ambiente do Chatterbox (torch/transformers próprios)
-.venv-tts/
-.venv-tts-gpu/
+
+# Testes de ponta a ponta (Playwright)
+desktop/tests-e2e/.build/
+desktop/test-results/
+desktop/playwright-report/
+# Variáveis de ambiente locais do launcher (ex.: CLAUDE_CONFIG_DIR)
+.synapse-env

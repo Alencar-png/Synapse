@@ -45,6 +45,7 @@ const workspace = require('./workspace');
 const transcriptImport = require('./transcript-import');
 const { readFileTolerant, unlinkTolerant } = require('./unicode-path');
 const { dockerRemove, killTree } = require('./process-kill');
+const { describeCancellation, planWorkCancellation } = require('./meeting-work');
 const obs = require('./obs');
 const flows = require('./flows');
 const flowRunner = require('./flow-runner');
@@ -511,11 +512,60 @@ async function trashMeeting(meeting) {
  * Exclui a reunião e tudo o que é dela: a pasta (transcrição, análise, PDF),
  * o vínculo com o projeto e as tarefas que nasceram dela.
  */
+/**
+ * Para tudo o que ainda corre por uma reunião.
+ *
+ * Chamado **antes** de apagar, e não depois: o `claude -p` da análise grava o
+ * arquivo quando termina, e um que termine no meio da exclusão recria a pasta
+ * que acabou de ir para a Lixeira — com um `analise.json` órfão dentro, que
+ * ninguém vê e ninguém limpa.
+ */
+function stopWorkForMeeting(meetingId) {
+  const plano = planWorkCancellation({
+    meetingId,
+    docQueue,
+    docJob: currentDocJob,
+    extraction: currentExtraction,
+  });
+
+  // A fila é a mesma referência que `runDocQueue` consome: mexer no conteúdo,
+  // e não trocar o array, é o que faz o laço enxergar a mudança.
+  docQueue.splice(0, docQueue.length, ...plano.queue);
+
+  if (plano.cancelExtraction) {
+    killTree(currentExtraction.child);
+    currentExtraction = null;
+  }
+  if (plano.cancelDocJob) {
+    currentDocJob.canceled = true;
+    killTree(currentDocJob.child);
+  }
+
+  const aviso = describeCancellation(plano);
+  if (aviso) {
+    send('job:log', aviso);
+    // A tela de documentos fica esperando um fim que não vem mais.
+    if (plano.cancelDocJob) send('doc:done', { ok: false, canceled: true, meetingId });
+  }
+  return plano;
+}
+
 async function deleteMeetingEverywhere(dir, id, files = null) {
+  // Só a exclusão da reunião inteira derruba trabalho; apagar arquivos
+  // avulsos escolhidos na tela não é motivo para cancelar nada.
+  if (!files) stopWorkForMeeting(id);
+
+  // O caminho da transcrição precisa ser lido agora: depois de apagar, a
+  // reunião não responde mais, e o temporário da análise ficaria para trás.
+  const transcript = files ? '' : library.getMeeting(dir, id)?.transcript || '';
+
   const result = await library.deleteMeeting(dir, id, files, trashMeeting);
   if (result.ok && !files) {
     projects.forgetMeeting(dir, id);
     tasks.deleteByMeeting(dir, id);
+    // O JSON temporário da análise nasce em %TEMP%, fora da pasta da reunião,
+    // e sobreviveria a ela.
+    if (transcript) unlinkTolerant(analysisTmpPathFor(transcript));
   }
   return result;
 }
@@ -589,7 +639,7 @@ async function finishJob(event, outputDir, projectId, autoName = false) {
       transcriptPath: transcricao,
       context: projectId ? projects.getProject(outputDir, projectId)?.context || '' : '',
       savePath: meeting ? analysisPath(meeting.dir, meeting.legacy) : null,
-      register: (child) => { currentExtraction = child; },
+      register: (child) => { currentExtraction = { child, meetingId: event.meetingId }; },
       onProgress: ({ progress, detail }) =>
         send('job:event', { event: 'stage', key: 'analyze', progress, detail }),
     });
@@ -675,7 +725,7 @@ async function runFlowSteps({ fluxo, outputDir, meetingId, transcriptPath, proje
       detail: rótulo,
     });
 
-    const { ok, message } = await runClaudeStep(item);
+    const { ok, message } = await runClaudeStep({ ...item, meetingId });
     if (!ok) {
       send('job:log', `Etapa "${item.step.name}": ${message}`);
       continue;
@@ -689,10 +739,10 @@ async function runFlowSteps({ fluxo, outputDir, meetingId, transcriptPath, proje
 }
 
 /** Um `claude -p` para uma etapa do fluxo. Nunca lança: devolve o motivo. */
-function runClaudeStep({ step, prompt, args }) {
+function runClaudeStep({ step, prompt, args, meetingId = '' }) {
   return new Promise((resolve) => {
     const child = spawn(findClaude(), args, { cwd: PROJECT_ROOT, windowsHide: true });
-    currentExtraction = child;
+    currentExtraction = { child, meetingId };
     child.stdin.write(prompt);
     child.stdin.end();
 
@@ -826,7 +876,7 @@ function startRecordingJob({ projectId, name, audio, mimeType = 'audio/webm' }) 
 async function cancelJob() {
   // A extração roda depois do pipeline: cancelar durante ela também vale.
   if (currentExtraction) {
-    currentExtraction.kill();
+    killTree(currentExtraction.child);
     currentExtraction = null;
     send('job:event', { event: 'canceled' });
     return { canceled: true };
@@ -914,7 +964,7 @@ async function generateDocs({ meetingId }) {
     return { started: false, message: 'Transcrição não encontrada.' };
   }
 
-  currentDocJob = { child: null, kind: 'documento', canceled: false };
+  currentDocJob = { child: null, kind: 'documento', canceled: false, meetingId };
   const progress = (description) => send('doc:progress', { kind: 'documento', description });
   progress('lendo a análise');
 

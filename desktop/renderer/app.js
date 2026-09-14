@@ -1689,7 +1689,8 @@ $('drawer-rename').addEventListener('click', () => {
 $('drawer-delete').addEventListener('click', async () => {
   const ok = await confirmDanger({
     title: 'Excluir esta reunião?',
-    message: 'A transcrição, a análise e o PDF vão para a Lixeira, e as tarefas que nasceram desta reunião são apagadas do kanban.',
+    message: 'A transcrição, a análise e o PDF vão para a Lixeira, e as tarefas que nasceram desta reunião são apagadas do kanban. '
+      + 'O que ainda estiver sendo gerado para ela — análise, etapas do fluxo, documento — é interrompido.',
     confirmLabel: 'Excluir reunião',
   });
   if (!ok) return;

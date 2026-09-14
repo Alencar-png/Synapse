@@ -19,11 +19,14 @@ Duas regras, ambas conservadoras para não apagar fala real:
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass
 
 from .models import TranscriptSegment
+
+logger = logging.getLogger(__name__)
 
 # Quantos segmentos iguais em sequência configuram alucinação.
 REPEAT_THRESHOLD = 3
@@ -134,6 +137,30 @@ def drop_isolated_phantoms(
     return saida, removidos
 
 
+def drop_useless_speakers(
+    segments: list[TranscriptSegment],
+) -> tuple[list[TranscriptSegment], bool]:
+    """Apaga a marcação de falante quando ela não separou nada.
+
+    A diarização compara a energia dos dois canais. Quando eles trazem a mesma
+    coisa — um arquivo estéreo cujas fontes já vieram somadas nos dois lados, o
+    caso de uma gravação do OBS com faixa de áudio única — a comparação empata
+    em todo trecho e o whisper responde ``?`` sempre.
+
+    Ter dois canais, portanto, não garante que haja dois lados. O sinal de que
+    houve separação de verdade é algum trecho atribuído a um lado; sem nenhum,
+    a marcação inteira é ruído e sai. "Sobreposição" escrito ao lado de cada
+    linha da reunião é pior do que linha nenhuma marcada.
+
+    Devolve os segmentos e se a marcação foi descartada.
+    """
+    if not any(seg.speaker for seg in segments):
+        return segments, False
+    if any(seg.speaker in ("0", "1") for seg in segments):
+        return segments, False
+    return [seg.model_copy(update={"speaker": ""}) for seg in segments], True
+
+
 def clean_segments(segments: list[TranscriptSegment]) -> tuple[list[TranscriptSegment], CleanupReport]:
     """Aplica as duas regras, na ordem: repetições primeiro, fantasmas depois.
 
@@ -142,4 +169,10 @@ def clean_segments(segments: list[TranscriptSegment]) -> tuple[list[TranscriptSe
     """
     sem_repeticao, repeats = collapse_repeats(segments)
     limpo, phantoms = drop_isolated_phantoms(sem_repeticao)
-    return limpo, CleanupReport(repeats_removed=repeats, phantoms_removed=phantoms)
+    final, sem_falantes = drop_useless_speakers(limpo)
+    if sem_falantes:
+        logger.info(
+            "Diarização sem resultado: os dois canais trazem o mesmo áudio. "
+            "Transcrição sem marcação de falante."
+        )
+    return final, CleanupReport(repeats_removed=repeats, phantoms_removed=phantoms)

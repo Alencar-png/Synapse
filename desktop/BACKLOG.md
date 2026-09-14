@@ -92,10 +92,28 @@ fala em cada canal, `--diarize` ligado, modelo `large-v3-turbo` na Radeon RX
 No JSON o falante vem em campo próprio (`"speaker": "0"`), com o texto limpo, e
 os tempos continuam certos **com o VAD ligado** — os dois foram testados juntos.
 
-**Servidor MCP do OBS**: handshake, `tools/list` e `tools/call` verificados
-contra o servidor real (`mcp-obs/server.js`) pelo cliente do app. A conexão com
-o OBS em si ainda não foi exercitada ao vivo: o obs-websocket precisa estar
-ligado na máquina.
+A cadeia inteira foi conferida nos dois casos, com o mesmo áudio:
 
-**Testes**: 154 unidades (node:test), 68 do motor (pytest) e 38 de ponta a ponta
+| Áudio | Transcrição |
+|-------|-------------|
+| fontes em canais separados | `**[00:00] Você:** Bom dia, pessoal...` / `**[00:07] Participantes:** Claro...` |
+| fontes somadas nos dois lados | sem marcação — o motor descarta o `?` em vez de escrever "Sobreposição" em toda linha |
+
+O segundo caso não é hipotético: é o que sai do OBS com faixa de áudio única.
+O arquivo é estéreo, mas os dois lados trazem a mesma coisa.
+
+**OBS ao vivo**: ciclo completo contra o OBS 32.0.4 desta máquina
+(obs-websocket 5.6.3, com senha).
+
+```
+obs_status  → {"obsVersion":"32.0.4","recordingTracks":1,"separateAudioTracks":false}
+start       → {"started":true}
+durante     → {"recording":true,"durationSeconds":5,"sizeBytes":3502110}
+stop        → {"stopped":true,"outputPath":"C:/Users/Pichau/Videos/...mp4"}
+```
+
+O arquivo que voltou entrou no pipeline e foi transcrito. A autenticação por
+desafio do obs-websocket foi exercitada contra o servidor real.
+
+**Testes**: 154 unidades (node:test), 72 do motor (pytest) e 38 de ponta a ponta
 (Playwright abrindo o Electron de verdade).

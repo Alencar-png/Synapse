@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from meeting_processor.cleanup import clean_segments, drop_useless_speakers
 from meeting_processor.models import (
     SPEAKER_MIC,
     SPEAKER_SYSTEM,
@@ -157,3 +158,53 @@ class TestTranscricaoEscrita:
         assert speaker_label("") == ""
         assert speaker_label("7") == ""
         assert speaker_label(SPEAKER_UNKNOWN) == "Sobreposição"
+
+
+class TestMarcacaoInutil:
+    """Dois canais não garantem dois lados.
+
+    O caso real: uma gravação do OBS com faixa de áudio única sai em estéreo,
+    mas com o microfone e o som da máquina já somados nos dois lados. A
+    comparação de energia empata em todo trecho, o whisper responde "?" sempre,
+    e a transcrição sairia com "Sobreposição" ao lado de cada linha.
+    """
+
+    @staticmethod
+    def _seg(texto, speaker, i=0):
+        return TranscriptSegment(start=i * 2.0, end=i * 2.0 + 1.5, text=texto, speaker=speaker)
+
+    def test_so_interrogacao_perde_a_marcacao(self):
+        segments = [
+            self._seg("Bom dia.", SPEAKER_UNKNOWN, 0),
+            self._seg("Tudo certo.", SPEAKER_UNKNOWN, 1),
+        ]
+        limpos, descartou = drop_useless_speakers(segments)
+        assert descartou is True
+        assert all(s.speaker == "" for s in limpos)
+        # O texto e os tempos ficam intactos: só a marcação sai.
+        assert [s.text for s in limpos] == ["Bom dia.", "Tudo certo."]
+
+    def test_um_lado_identificado_preserva_tudo(self):
+        segments = [
+            self._seg("Bom dia.", SPEAKER_MIC, 0),
+            self._seg("(falando junto)", SPEAKER_UNKNOWN, 1),
+        ]
+        limpos, descartou = drop_useless_speakers(segments)
+        assert descartou is False
+        assert limpos[0].speaker == SPEAKER_MIC
+        # "?" no meio de uma conversa separada é informação legítima.
+        assert limpos[1].speaker == SPEAKER_UNKNOWN
+
+    def test_transcricao_sem_diarizacao_passa_intacta(self):
+        segments = [self._seg("Bom dia.", "", 0)]
+        limpos, descartou = drop_useless_speakers(segments)
+        assert descartou is False
+        assert limpos[0].speaker == ""
+
+    def test_a_limpeza_completa_aplica_a_regra(self):
+        segments = [
+            self._seg("Bom dia.", SPEAKER_UNKNOWN, 0),
+            self._seg("Vamos começar.", SPEAKER_UNKNOWN, 1),
+        ]
+        limpos, _ = clean_segments(segments)
+        assert all(s.speaker == "" for s in limpos)

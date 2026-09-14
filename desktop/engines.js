@@ -36,7 +36,30 @@ function firstExisting(candidates) {
   return candidates.find((c) => !c.includes(path.sep) || fs.existsSync(c)) || null;
 }
 
-/** Modelos GGML disponíveis, do menor para o maior. */
+/**
+ * Ordem de preferência dos modelos, do melhor para o pior.
+ *
+ * Ordenar por tamanho não serve: o `large-v3-turbo` tem metade do peso do
+ * `large-v3` e transcreve mais rápido, mas erra mais em português — nomes
+ * próprios, números e o fim das frases. Numa reunião que vira tarefa e
+ * documento, o custo de um erro é maior que o de esperar. Quem quiser o turbo
+ * o escolhe em Configurações; o padrão é o mais fiel que estiver na máquina.
+ */
+const MODEL_PREFERENCE = [
+  'large-v3', 'large-v3-turbo', 'large-v2', 'large',
+  'medium', 'small', 'base', 'tiny',
+];
+
+/** Posição do modelo na preferência; o desconhecido vai para o fim. */
+function modelRank(id) {
+  // Sem o casamento exato primeiro, "large-v3" acharia "large-v3-turbo".
+  const exato = MODEL_PREFERENCE.indexOf(id);
+  if (exato >= 0) return exato;
+  const prefixo = MODEL_PREFERENCE.findIndex((p) => id.startsWith(p));
+  return prefixo >= 0 ? prefixo + 0.5 : MODEL_PREFERENCE.length;
+}
+
+/** Modelos GGML disponíveis, do mais fiel para o mais leve. */
 function listNativeModels(projectRoot) {
   const dir = nativePaths(projectRoot).modelsDir;
   if (!fs.existsSync(dir)) return [];
@@ -54,7 +77,10 @@ function listNativeModels(projectRoot) {
         sizeMB: Math.round(fs.statSync(full).size / 1048576),
       };
     })
-    .sort((a, b) => a.sizeMB - b.sizeMB);
+    // Empate (dois modelos fora da lista) desempata pelo maior, que costuma
+    // ser o mais capaz. O primeiro da lista é o que o app usa sem ninguém
+    // escolher nada.
+    .sort((a, b) => modelRank(a.id) - modelRank(b.id) || b.sizeMB - a.sizeMB);
 }
 
 /** Estado do motor nativo: o que existe e o que falta. */
@@ -92,7 +118,7 @@ function buildNativeArgs({ videoPath, outputDir, formats, name = '' }) {
  * O modelo é escolhido por caminho (não por nome): no backend whisper.cpp o
  * que vale é o arquivo .bin, e é ele que a UI lista.
  */
-function buildNativeEnv({ cli, modelPath, language, threads }) {
+function buildNativeEnv({ cli, modelPath, language, threads, diarize = false }) {
   return {
     MEETING_WHISPER_BACKEND: 'cpp',
     MEETING_WHISPER_CLI_PATH: cli,
@@ -100,6 +126,9 @@ function buildNativeEnv({ cli, modelPath, language, threads }) {
     MEETING_WHISPER_LANGUAGE: language,
     MEETING_WHISPER_DEVICE: 'auto', // deixa o whisper.cpp usar a GPU
     MEETING_WHISPER_THREADS: String(threads || 0),
+    // Separar quem fala pelo canal do áudio: microfone à esquerda, som da
+    // chamada à direita. O motor ignora o pedido quando a gravação é mono.
+    MEETING_WHISPER_DIARIZE: diarize ? '1' : '0',
     // Sem isto o Python escreve o stdout no code page do Windows: o nome de
     // uma reunião acentuada chega corrompido e o caminho deixa de existir.
     PYTHONUTF8: '1',
@@ -138,6 +167,8 @@ function explainNativeFailure(lastError, python, code) {
 
 module.exports = {
   IMAGE_NAME,
+  MODEL_PREFERENCE,
+  modelRank,
   MODELS_VOLUME,
   buildDockerArgs,
   toHostPath,

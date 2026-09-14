@@ -24,9 +24,10 @@
   let settings = {
     outputDir: 'C:\\Users\\voce\\Synapse',
     engine: 'native',
-    nativeModel: 'models/ggml-large-v3-turbo.bin',
+    nativeModel: 'models/ggml-large-v3.bin',
     model: 'large-v3',
     language: 'pt',
+    diarize: true,
     steps: { kanban: true, documento: true },
     tts: { engine: 'system', voice: 'pt-BR-FranciscaNeural', rate: '+5%', systemVoice: '' },
   };
@@ -43,6 +44,23 @@
       custom: null,
     },
   };
+
+  // O fluxo depois da transcrição. Na demonstração vem com a análise embutida
+  // e uma etapa de exemplo, para a tela mostrar como o encadeamento aparece.
+  let mockFlow = [
+    {
+      id: 'analise',
+      name: 'Análise da reunião',
+      description: 'Lê a transcrição uma vez e devolve o JSON que vira os cards do Kanban e a tabela do documento.',
+      prompt: mockPrompts.analise.text,
+      input: 'transcricao',
+      output: 'analise',
+      fileName: 'analise.json',
+      skill: '',
+      enabled: true,
+      builtin: true,
+    },
+  ];
 
   const chatLog = new Map();   // projectId → mensagens
   let projects = [
@@ -158,7 +176,9 @@
     async enginesStatus() {
       return {
         active: settings.engine,
+        // Na ordem que o motor entrega: do mais fiel para o mais leve.
         native: { ok: true, models: [
+          { id: 'large-v3', path: 'models/ggml-large-v3.bin', sizeMB: 3095 },
           { id: 'large-v3-turbo', path: 'models/ggml-large-v3-turbo.bin', sizeMB: 1624 },
           { id: 'medium', path: 'models/ggml-medium.bin', sizeMB: 1533 },
         ] },
@@ -167,8 +187,27 @@
     },
     async pickOutputDir() { return null; },
     async pickVideo() { return 'C:\\videos\\gravacao-demo.mkv'; },
+    async pickTranscript() { return 'C:\\videos\\legenda-demo.srt'; },
     pathForFile(file) { return file?.name || ''; },
     async openPath() {},
+    // Na demonstração não há disco nem Explorer: estes existem para nenhum
+    // clique da interface encontrar um método ausente.
+    async showInFolder() {},
+    async readFile() {
+      return {
+        ok: true,
+        text: '# Transcrição de demonstração\n\n**[00:00]** Bom dia a todos.\n',
+      };
+    },
+    async downloadFile() { return { ok: false, message: 'Sem disco na demonstração.' }; },
+    async importTranscript() {
+      return { ok: false, message: 'A importação de transcrição não roda na demonstração.' };
+    },
+    async cancelDoc() { return { canceled: false }; },
+    async dockerStatus() {
+      return { docker: true, image: false, version: '27.1', message: 'Imagem não construída (demonstração).' };
+    },
+    async buildImage() { return { started: false, message: 'Sem Docker na demonstração.' }; },
 
     // --- Projetos ---
     async listProjects() {
@@ -305,6 +344,61 @@
     },
     async resetPrompt(kind) { mockPrompts[kind].custom = null; return { ok: true, isCustom: false }; },
 
+    // --- Fluxo depois da transcrição ---
+    async listFlow() {
+      return {
+        steps: mockFlow,
+        placeholders: {
+          '{{TRANSCRICAO}}': 'caminho do arquivo da transcrição',
+          '{{ANALISE}}': 'caminho do analise.json desta reunião',
+          '{{ANTERIOR}}': 'caminho da saída da etapa anterior',
+          '{{SAIDA}}': 'caminho onde esta etapa deve gravar',
+          '{{CONTEXTO}}': 'o contexto escrito no projeto',
+          '{{REUNIAO}}': 'nome da reunião',
+          '{{PROJETO}}': 'nome do projeto',
+        },
+      };
+    },
+    async saveFlow(steps) {
+      const sujas = (steps || []).filter((s) => s.id !== 'analise');
+      const semNome = sujas.find((s) => !String(s.name || '').trim());
+      if (semNome) return { ok: false, message: 'A etapa precisa de um nome.' };
+      const semSaida = sujas.find((s) => s.output === 'arquivo' && !String(s.prompt || '').includes('{{SAIDA}}') && !s.skill);
+      if (semSaida) return { ok: false, message: 'O prompt precisa dizer onde gravar: use {{SAIDA}} no texto.' };
+      mockFlow = (steps || []).map((s) => ({
+        ...s,
+        id: s.id || nid('etapa'),
+        builtin: s.id === 'analise',
+        enabled: s.enabled !== false,
+        fileName: s.fileName || 'saida.md',
+        skill: s.skill || '',
+        description: s.description || '',
+      }));
+      return { ok: true, steps: mockFlow };
+    },
+    async newFlowStep() {
+      return {
+        id: '', name: 'Nova etapa', description: '', prompt: '', input: 'transcricao',
+        output: 'arquivo', fileName: 'saida.md', skill: '', enabled: true, builtin: false,
+      };
+    },
+
+    // --- OBS Studio ---
+    async obsStatus() {
+      // Na demonstração o OBS não está no ar: o app grava sozinho, e a tela de
+      // Configurações mostra o caminho para ligá-lo.
+      return {
+        ok: false,
+        enabled: Boolean(settings.obs?.enabled),
+        message: 'Não achei o OBS em 127.0.0.1:4455. Abra o OBS e ligue Ferramentas → Configurações do Servidor WebSocket → Ativar servidor WebSocket.',
+      };
+    },
+    async obsStart() { return { ok: false, message: 'OBS indisponível na demonstração.' }; },
+    async obsStop() { return { ok: false, message: 'OBS indisponível na demonstração.' }; },
+    async obsRecordingStatus() { return { ok: false, message: 'OBS indisponível na demonstração.' }; },
+    async obsPause() { return { ok: false, message: 'OBS indisponível na demonstração.' }; },
+    async obsProcess() { return { started: false, message: 'OBS indisponível na demonstração.' }; },
+
     // --- Atualização do app ---
     async updateVersion() { return { ok: true, commit: 'mock123', date: new Date().toISOString(), subject: 'mock', branch: 'master' }; },
     async updateCheck() {
@@ -354,10 +448,8 @@
       return {
         voices: [{ id: 'pt-BR-FranciscaNeural', label: 'Francisca — feminina, natural' }, { id: 'pt-BR-AntonioNeural', label: 'Antônio — masculina, natural' }],
         rates: [{ id: '+0%', label: 'normal' }, { id: '+5%', label: 'um pouco mais rápido' }],
-        chatterbox: { ok: false, running: false, message: 'Falta o ambiente do Chatterbox (.venv-tts).' },
       };
     },
-    async pickVoiceRef() { return 'C:\\Users\\voce\\vozes\\minha-voz.wav'; },
     async chatTranscribe() {
       await new Promise((r) => setTimeout(r, 900));
       return { ok: true, text: 'O que ficou decidido na última reunião?' };

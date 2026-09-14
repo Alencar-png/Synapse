@@ -272,6 +272,13 @@
               <div class="set-info"><strong>Modelo</strong><span>usado na próxima transcrição</span></div>
               <select class="input" id="set-model"></select>
             </div>
+            <label class="set-row set-toggle">
+              <div class="set-info">
+                <strong>Marcar quem fala</strong>
+                <span>separa o seu microfone do áudio da chamada e escreve o falante em cada trecho — vale para o que o app grava</span>
+              </div>
+              <input class="switch" type="checkbox" id="set-diarize" />
+            </label>
             <div class="set-row">
               <div class="set-info"><strong>Idioma</strong><span>idioma falado nas reuniões</span></div>
               <select class="input" id="set-language">
@@ -280,6 +287,30 @@
                 <option value="es">espanhol</option>
                 <option value="auto">detectar automaticamente</option>
               </select>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>Gravar pelo OBS Studio</h2></div>
+            <p class="set-lead">Com o OBS ligado, é ele que grava: o microfone e o som da chamada
+               ficam em faixas separadas do arquivo, a gravação não depende desta janela, e o
+               assistente do projeto também pode começar e parar por conta própria. Sem OBS, o app
+               grava sozinho, como sempre.</p>
+            <label class="set-row set-toggle">
+              <div class="set-info">
+                <strong>Usar o OBS quando estiver disponível</strong>
+                <span id="set-obs-desc">ligue o servidor em Ferramentas → Configurações do Servidor WebSocket, dentro do OBS</span>
+              </div>
+              <input class="switch" type="checkbox" id="set-obs-enabled" />
+            </label>
+            <div class="set-row" id="set-obs-conn" hidden>
+              <div class="set-info"><strong>Onde</strong><span>endereço, porta e senha do servidor do OBS</span></div>
+              <div class="set-btns">
+                <input class="input input-sm" id="set-obs-host" placeholder="127.0.0.1" aria-label="Endereço do OBS" />
+                <input class="input input-sm" id="set-obs-port" placeholder="4455" aria-label="Porta do OBS" inputmode="numeric" />
+                <input class="input input-sm" id="set-obs-password" type="password" placeholder="senha" aria-label="Senha do OBS" />
+                <button class="btn ghost" id="set-obs-test" type="button">Testar</button>
+              </div>
             </div>
           </div>
 
@@ -317,6 +348,21 @@
           </div>
 
           <div class="card">
+            <div class="card-head"><h2>Seu fluxo</h2></div>
+            <p class="set-lead">Etapas próprias que rodam depois da transcrição, na ordem em que
+               estiverem aqui. Cada uma tem o seu prompt e grava um arquivo na pasta da reunião — e
+               a etapa seguinte pode ler o que a anterior escreveu. Uma etapa também pode chamar uma
+               <strong>skill</strong> do Claude Code pelo nome.</p>
+            <div id="flow-list" class="flow-list"></div>
+            <div class="set-row">
+              <div class="set-info"><span id="flow-status"></span></div>
+              <div class="set-btns">
+                <button class="btn ghost" id="flow-add" type="button">Nova etapa</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
             <div class="card-head"><h2>Voz do assistente</h2></div>
             <p class="set-lead">Como o chat lê as respostas. Quando o motor escolhido falha, a voz do
                sistema assume sozinha.</p>
@@ -324,29 +370,8 @@
               <div class="set-info"><strong>Motor</strong><span id="set-tts-engine-desc">—</span></div>
               <div class="seg" id="set-tts-engine">
                 <button type="button" data-engine="neural">Edge</button>
-                <button type="button" data-engine="chatterbox">Chatterbox</button>
                 <button type="button" data-engine="system">Sistema</button>
               </div>
-            </div>
-            <div class="set-row" id="set-tts-ref-row" hidden>
-              <div class="set-info">
-                <strong>Voz de referência</strong>
-                <span class="path" id="set-tts-ref">—</span>
-                <span>opcional: um áudio de 5 a 15 s com fala limpa, e o Chatterbox fala com essa voz</span>
-              </div>
-              <div class="set-btns">
-                <button class="btn ghost" id="set-tts-ref-pick" type="button">Escolher</button>
-                <button class="icon-btn" id="set-tts-ref-clear" type="button" title="Voltar à voz padrão">✕</button>
-              </div>
-            </div>
-            <div class="set-row" id="set-tts-exag-row" hidden>
-              <div class="set-info"><strong>Expressividade</strong><span>quanto a entonação varia</span></div>
-              <select class="input" id="set-tts-exag">
-                <option value="0.3">contida</option>
-                <option value="0.5">natural</option>
-                <option value="0.7">expressiva</option>
-                <option value="0.9">dramática</option>
-              </select>
             </div>
             <div class="set-row" id="set-tts-voice-row">
               <div class="set-info"><strong>Voz</strong><span id="set-tts-voice-desc">voz neural em português do Brasil</span></div>
@@ -524,18 +549,63 @@
 
     <!-- Prompt de uma etapa: ver, editar, restaurar. -->
     <div class="modal modal-wide" id="modal-prompt" hidden>
-      <h2 id="mp-title">Prompt</h2>
-      <p class="modal-sub" id="mp-status">padrão do app</p>
-      <form id="mp-form">
+      <h2 id="mpr-title">Prompt</h2>
+      <p class="modal-sub" id="mpr-status">padrão do app</p>
+      <form id="mpr-form">
         <label class="field"><span>Instruções para o Claude</span>
-          <textarea class="input prompt-editor" id="mp-text" spellcheck="false"></textarea>
+          <textarea class="input prompt-editor" id="mpr-text" spellcheck="false"></textarea>
         </label>
-        <p class="prompt-help" id="mp-help"></p>
-        <p class="err" id="mp-error"></p>
+        <p class="prompt-help" id="mpr-help"></p>
+        <p class="err" id="mpr-error"></p>
         <div class="modal-actions">
-          <button class="btn ghost danger" id="mp-reset" type="button" hidden>Restaurar padrão</button>
+          <button class="btn ghost danger" id="mpr-reset" type="button" hidden>Restaurar padrão</button>
           <span class="spacer"></span>
-          <button class="btn ghost" id="mp-cancel" type="button">Cancelar</button>
+          <button class="btn ghost" id="mpr-cancel" type="button">Cancelar</button>
+          <button class="btn solid" type="submit">Salvar</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="modal modal-wide" id="modal-step" hidden>
+      <h2 id="mst-title">Etapa do fluxo</h2>
+      <p class="modal-sub">roda depois da transcrição, na ordem do fluxo</p>
+      <form id="mst-form">
+        <label class="field"><span>Nome</span>
+          <input class="input" id="mst-name" maxlength="80" placeholder="Resumo para o cliente" />
+        </label>
+        <div class="field-row">
+          <label class="field"><span>O que esta etapa lê</span>
+            <select class="input" id="mst-input">
+              <option value="transcricao">a transcrição da reunião</option>
+              <option value="analise">a análise (JSON com decisões e tarefas)</option>
+              <option value="anterior">o que a etapa anterior gravou</option>
+            </select>
+          </label>
+          <label class="field"><span>O que ela grava</span>
+            <select class="input" id="mst-output">
+              <option value="arquivo">um arquivo na pasta da reunião</option>
+              <option value="nenhuma">nada — só executa</option>
+            </select>
+          </label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span>Nome do arquivo</span>
+            <input class="input" id="mst-file" maxlength="120" placeholder="resumo-cliente.md" />
+          </label>
+          <label class="field"><span>Skill do Claude Code (opcional)</span>
+            <input class="input" id="mst-skill" maxlength="80" placeholder="ex.: wiki-ingest" />
+          </label>
+        </div>
+        <label class="field"><span>Instruções para o Claude</span>
+          <textarea class="input prompt-editor" id="mst-prompt" spellcheck="false"
+            placeholder="Leia {{TRANSCRICAO}} e escreva um resumo de meia página em {{SAIDA}}."></textarea>
+        </label>
+        <p class="prompt-help" id="mst-help"></p>
+        <p class="err" id="mst-error"></p>
+        <div class="modal-actions">
+          <button class="btn ghost danger" id="mst-delete" type="button" hidden>Excluir etapa</button>
+          <span class="spacer"></span>
+          <button class="btn ghost" id="mst-cancel" type="button">Cancelar</button>
           <button class="btn solid" type="submit">Salvar</button>
         </div>
       </form>

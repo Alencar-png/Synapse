@@ -67,17 +67,61 @@ container e GPU são exclusivos.
 cd desktop && npm install && npm start
 ```
 
-Ou clique em `Meeting Processor (sem console).vbs` na raiz do projeto.
+Ou clique em `Meeting Processor (sem console).vbs` na raiz do projeto. Para
+abrir junto com o Windows e para variáveis só do app (`.synapse-env`), veja o
+README da raiz, em "Abra".
+
+## Testes
+
+```bash
+npm test              # unidades: módulos puros, sem Electron (node:test)
+npm run test:e2e      # ponta a ponta: o Electron de verdade, guiado pelo Playwright
+npm run test:e2e -- --headed -g chat   # vendo a janela, só um cenário
+```
+
+A suíte de ponta a ponta (`tests-e2e/`) abre o app num workspace temporário
+(`SYNAPSE_USER_DATA` aponta o userData; o `settings.json` semeado aponta a
+pasta de saída), então ela nunca toca nas configurações nem no `synapse.db` de
+quem roda. O chat conversa com um `claude` de mentira (`tests-e2e/fake-claude`,
+compilado pelo `csc` do .NET Framework no início da suíte e apontado por
+`CLAUDE_BIN`): responde o protocolo `stream-json` sem rede, sem login e sem
+custo. Cada teste recolhe toda exceção do renderer e todo `console.error` — um
+erro que antes aparecia "do nada" ao abrir vira um teste vermelho com a
+mensagem. Os cenários:
+
+| Arquivo | O que garante |
+|---------|---------------|
+| `01-boot` | a janela abre, a tela inicial desenha, zero erros; todo id usado pelo `app.js` existe no HTML e nenhum se repete; a trava de instância única está tomada |
+| `02-navigation` | as quatro telas abrem pela barra lateral; estados vazios; Configurações com os motores de transcrição e de voz |
+| `03-projects` | criar (e recusar sem nome), abrir cada aba, editar, excluir com confirmação |
+| `04-prompts` | abrir, salvar sem recarregar a página, personalizar, restaurar, recusar sem placeholders |
+| `05-chat` | pergunta e resposta, ferramenta em uso, falha do processo vira mensagem, histórico entre abas, Nova conversa, modo autônomo com confirmação |
+| `06-kanban` | colunas vazias, criar na coluna certa, recusar sem título, editar/mover/excluir |
+
+Falhou? `test-results/` guarda screenshot e trace (`npx playwright show-trace
+<arquivo>`); `playwright-report/` tem o relatório em HTML.
 
 ## Os fluxos
 
 ### Gravar
 
 Dentro de um projeto, **Iniciar reunião** grava microfone **e** áudio do
-sistema (loopback), mixados num arquivo só — numa chamada online o microfone
-traz apenas o seu lado. Sem permissão de loopback, o app segue só com o
-microfone e diz isso na tela. Ao finalizar, o áudio entra no mesmo pipeline da
+sistema (loopback) — numa chamada online o microfone traz apenas o seu lado.
+As duas fontes não são mixadas: o microfone vai para o **canal esquerdo** e o
+som do sistema para o **direito**. É dessa separação que sai o "quem falou" na
+transcrição (`--diarize` do whisper.cpp); somadas num canal só, as vozes ficam
+indistinguíveis para sempre. Sem permissão de loopback, o app segue só com o
+microfone, diz isso na tela e a transcrição sai sem marcação de falante — em
+vez de uma marcação errada. Ao finalizar, o áudio entra no mesmo pipeline da
 importação e o arquivo temporário é apagado no fim.
+
+**Pelo OBS Studio.** Com o OBS aberto e o servidor WebSocket ligado
+(Configurações → Gravar pelo OBS Studio), é ele que grava. Vantagens: o
+microfone e o som da máquina ficam em **faixas separadas** do arquivo, sem
+vazamento de um lado no outro, e a gravação não depende da janela do app.
+A conversa com o OBS passa por um servidor MCP próprio — veja
+[`mcp-obs/README.md`](../mcp-obs/README.md), inclusive como configurar as
+faixas separadas. O chat do projeto pode usar as mesmas ferramentas.
 
 ### Importar
 
@@ -120,6 +164,33 @@ apagar essa cópia, e atualizar o app nunca sobrescreve o que a pessoa escreveu.
 O editor recusa texto sem os placeholders obrigatórios (`{{TRANSCRICAO}}`,
 `{{PDF}}`…), porque é por eles que o app passa os caminhos.
 
+### Seu fluxo
+
+Em **Configurações → Seu fluxo**, a análise deixa de ser a única coisa que
+acontece depois da transcrição. Cada etapa tem nome, prompt, o que lê
+(transcrição, análise ou a saída da etapa anterior) e onde grava — um arquivo
+na pasta da reunião. Elas rodam na ordem da lista, e o encadeamento é o que dá
+poder ao conjunto: a etapa 2 lê o que a 1 escreveu, e um resumo pode virar um
+e-mail, uma tradução ou uma entrada de wiki sem nova leitura da transcrição.
+
+Uma etapa pode nomear uma **skill** do Claude Code. O nome entra como instrução
+no começo do prompt e a ferramenta `Skill` é liberada só nesse caso.
+
+O modelo (`flows.js`) e a execução (`flow-runner.js`) são módulos separados: o
+encadeamento — a parte difícil — é função pura e tem teste. As etapas ficam em
+`flows.json`, na pasta de dados do usuário, para uma atualização do app nunca
+apagar o que alguém escreveu.
+
+A análise é uma etapa como as outras, com duas diferenças: não pode ser apagada
+nem renomeada (o Kanban e o PDF nascem do formato dela) e o prompt dela mora em
+`prompts/analise.md`, editado pelo editor de prompts. Desligá-la, isso sim —
+e aí não saem cards nem documento.
+
+Toda etapa roda com **apenas `Read` e `Write`**. A transcrição é fala de
+terceiros, e fala de terceiros é dado, nunca instrução: com `Bash` liberado,
+uma frase plantada numa reunião viraria comando na máquina de quem só queria o
+resumo.
+
 Enquanto tudo isso roda, a tela de processamento pode ser **minimizada** (botão
 ou `Esc`): o progresso segue num chip no pé da barra lateral, o app fica livre
 e um clique no chip traz a tela de volta. Ao terminar, o aviso único aparece
@@ -151,15 +222,8 @@ hora). Sem internet ou sem o pacote, o renderer cai para a voz do sistema
 sistema, a lista é a das vozes instaladas no Windows. Cada resposta do
 assistente tem um 🔊 para ser lida sozinha, com ou sem o modo Voz.
 
-Terceiro motor, opcional: **Chatterbox Multilingual V3 pt-BR**, offline. O
-processo principal sobe um worker Python (`chatterbox-worker.js` →
-`meeting_processor/tts_chatterbox.py --serve`, no `.venv-tts`) que carrega o
-modelo uma vez e atende pedidos por stdin, um JSON por linha; dez minutos sem
-falar, o worker é derrubado para devolver ~4 GB de RAM. Em CPU leva alguns
-segundos por frase. Aceita um WAV de referência para clonar a voz e um grau de
-expressividade. O README da raiz diz como instalar. A Anthropic não
-expõe a voz do Claude como API e o modo de voz do Claude Code é só entrada, na
-interface interativa — por isso a saída de voz é esta.
+A Anthropic não expõe a voz do Claude como API e o modo de voz do Claude
+Code é só entrada, na interface interativa — por isso a saída de voz é esta.
 
 Dois modos, por projeto, no alto do chat:
 
@@ -218,8 +282,7 @@ desktop/
 ├── project-chat.js      # chat do projeto: system prompt, args do claude -p, tradução do stream
 ├── chat-messages.js     # histórico do chat (tabela chat_messages)
 ├── voice.js             # recado de voz → texto, com o whisper.cpp das reuniões
-├── tts.js               # resposta → áudio: Edge neural, Chatterbox ou voz do sistema
-├── chatterbox-worker.js # worker Python do Chatterbox: fila, ready, ociosidade
+├── tts.js               # resposta → áudio: Edge neural ou voz do sistema
 ├── transcript-import.js # texto e legenda viram reunião (.txt .md .srt .vtt)
 ├── library.js           # a pasta de saída lida como biblioteca (CRUD)
 ├── db.js                # banco do workspace (SQLite) e migração dos JSONs

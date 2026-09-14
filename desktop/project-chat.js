@@ -39,7 +39,7 @@ const fmtDate = (ts) => {
  * fazer é ler e sugerir — o texto diz isso para não prometer o que não faz.
  */
 function buildChatSystemPrompt({
-  project, meetings = [], tasks = [], workspaceDir, meetingsDir, workdir, bypass,
+  project, meetings = [], tasks = [], meetingsDir, workdir, bypass,
 }) {
   const linhas = [
     'Você é o assistente do Synapse — o segundo cérebro de quem usa o app — trabalhando dentro de um projeto.',
@@ -54,7 +54,10 @@ function buildChatSystemPrompt({
   linhas.push('', '## Onde as coisas estão', '');
   linhas.push(`- Pasta de trabalho (seu diretório atual): ${workdir}`);
   if (meetingsDir && meetingsDir !== workdir) linhas.push(`- Reuniões deste projeto: ${meetingsDir}`);
-  linhas.push(`- O Kanban do projeto mora em ${path.join(workspaceDir || meetingsDir || workdir, 'synapse.db')}; não o edite diretamente — para mudar tarefas, diga à pessoa o que faria.`);
+  // O banco fica fora do alcance de propósito: ele guarda o Kanban, o contexto
+  // e a conversa de todos os projetos, e este chat é de um só. O que interessa
+  // deste projeto já vem no prompt, abaixo.
+  linhas.push('- O Kanban não é um arquivo que você abre: as tarefas deste projeto estão listadas abaixo. Para mudar alguma, diga à pessoa o que faria.');
 
   if (meetings.length) {
     linhas.push('', `## Reuniões do projeto (${meetings.length})`, '');

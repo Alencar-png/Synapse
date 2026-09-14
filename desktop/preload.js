@@ -20,7 +20,6 @@ const listeners = {
   'doc:done': new Set(),
   'update:log': new Set(),
   'chat:event': new Set(),
-  'tts:event': new Set(),
 };
 
 for (const channel of Object.keys(listeners)) {
@@ -68,6 +67,14 @@ contextBridge.exposeInMainWorld('api', {
   processRecording: (payload) => ipcRenderer.invoke('job:recording', payload),
   cancelJob: () => ipcRenderer.invoke('job:cancel'),
 
+  // --- Gravação pelo OBS Studio (via o servidor MCP em mcp-obs/) ---
+  obsStatus: () => ipcRenderer.invoke('obs:status'),
+  obsStart: () => ipcRenderer.invoke('obs:start'),
+  obsStop: () => ipcRenderer.invoke('obs:stop'),
+  obsRecordingStatus: () => ipcRenderer.invoke('obs:recordingStatus'),
+  obsPause: (resume = false) => ipcRenderer.invoke('obs:pause', { resume }),
+  obsProcess: (payload) => ipcRenderer.invoke('obs:process', payload),
+
   // --- Documentos gerados a partir da transcrição ---
   generateDoc: (payload) => ipcRenderer.invoke('doc:generate', payload),
   cancelDoc: () => ipcRenderer.invoke('doc:cancel'),
@@ -77,6 +84,11 @@ contextBridge.exposeInMainWorld('api', {
   getPrompt: (kind) => ipcRenderer.invoke('prompt:get', kind),
   savePrompt: (kind, text) => ipcRenderer.invoke('prompt:save', { kind, text }),
   resetPrompt: (kind) => ipcRenderer.invoke('prompt:reset', kind),
+
+  // --- Fluxo depois da transcrição: etapas próprias e skills ---
+  listFlow: () => ipcRenderer.invoke('flow:list'),
+  saveFlow: (steps) => ipcRenderer.invoke('flow:save', steps),
+  newFlowStep: () => ipcRenderer.invoke('flow:new'),
 
   // --- Atualização do app ---
   updateVersion: () => ipcRenderer.invoke('update:version'),
@@ -93,7 +105,6 @@ contextBridge.exposeInMainWorld('api', {
   chatTranscribe: (payload) => ipcRenderer.invoke('chat:transcribe', payload),
   ttsSpeak: (text, requestId = '') => ipcRenderer.invoke('tts:speak', { text, requestId }),
   ttsOptions: () => ipcRenderer.invoke('tts:options'),
-  pickVoiceRef: () => ipcRenderer.invoke('dialog:pickVoiceRef'),
   pickWorkdir: () => ipcRenderer.invoke('dialog:pickWorkdir'),
 
   // --- Sistema ---

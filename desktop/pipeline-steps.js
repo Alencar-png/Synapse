@@ -53,9 +53,12 @@ function planAfterTranscription({
   projectId = '',
   autoName = false,
   hasTranscript = true,
+  analysisEnabled = true,
 } = {}) {
   const on = normalizeSteps(steps);
-  const podeLer = Boolean(hasTranscript);
+  // A etapa da análise desligada no fluxo derruba tudo o que nasce dela: sem
+  // o JSON não há cards, não há tabela no PDF e não há título sugerido.
+  const podeLer = Boolean(hasTranscript) && analysisEnabled !== false;
   const saveTasks = podeLer && Boolean(projectId) && on.kanban;
   const docs = podeLer ? DOC_KINDS.filter((kind) => on[kind]) : [];
   const analyze = podeLer && (saveTasks || Boolean(autoName) || docs.length > 0);

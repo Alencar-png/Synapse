@@ -116,11 +116,18 @@ function documentPdfPath(transcriptPath) {
  *
  * `stream-json` (que exige `--verbose`) permite acompanhar o trabalho em vez
  * de olhar para uma tela parada por dois minutos.
+ *
+ * **Só Read e Write.** Esta análise roda sozinha ao fim de toda transcrição,
+ * sem ninguém para aprovar nada, e o que ela lê é a fala de terceiros — ou um
+ * arquivo de legenda que veio de fora. Texto assim é dado, nunca instrução:
+ * com Bash liberado, uma frase plantada na reunião viraria comando na máquina
+ * de quem só queria o resumo. Ler a transcrição e escrever o JSON é tudo de
+ * que o trabalho precisa.
  */
 function buildClaudeArgs({ model = 'sonnet' } = {}) {
   return [
     '-p',
-    '--allowedTools', 'Read,Write,Bash',
+    '--allowedTools', 'Read,Write',
     '--permission-mode', 'acceptEdits',
     '--model', model,
     '--output-format', 'stream-json',

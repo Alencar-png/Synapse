@@ -993,6 +993,66 @@ input[type="search"]::-webkit-search-cancel-button { filter: invert(0.6); cursor
 .set-lead { margin: 0 0 4px; font-size: 12px; line-height: 1.5; color: var(--muted-dim); }
 .set-btns { display: flex; gap: 6px; flex: none; }
 
+/* Campos curtos lado a lado (endereço, porta e senha do OBS): sem isto cada
+   um pede a largura de um seletor inteiro e a linha quebra. */
+.input-sm { width: 8.5rem; min-width: 0; }
+.input-sm#set-obs-port { width: 4.5rem; }
+
+/* O fluxo depois da transcrição: uma linha por etapa, na ordem em que rodam.
+   O número à esquerda é a ordem — é a informação que o olho procura primeiro
+   quando o assunto é "o que acontece antes do quê". */
+.flow-list { display: flex; flex-direction: column; }
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.flow-step:last-child { border-bottom: none; }
+.flow-step.is-off { opacity: 0.55; }
+.flow-order {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.flow-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.flow-name { font-weight: 600; }
+.flow-meta {
+  font-size: 12px;
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flow-tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  margin-right: 4px;
+}
+.flow-actions { flex: none; display: flex; gap: 4px; align-items: center; }
+.flow-move {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  color: inherit;
+  line-height: 1;
+}
+.flow-move:hover:not(:disabled) { border-color: var(--accent, currentColor); }
+.flow-move:disabled { opacity: 0.3; cursor: default; }
+
 /* Atualização: o que vem, e o que o app está fazendo enquanto atualiza. */
 #upd-version { direction: ltr; }
 #upd-status:empty { display: none; }
@@ -1279,6 +1339,9 @@ input[type="search"]::-webkit-search-cancel-button { filter: invert(0.6); cursor
 .modal-sub { margin: -10px 0 14px; font-family: var(--mono); font-size: 11px; color: var(--muted-dim); }
 
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+/* `display: flex` acima vence o `display: none` que o atributo hidden traz do
+   navegador: sem isto, esconder um campo pelo `hidden` não esconde nada. */
+.field[hidden] { display: none; }
 .field > span {
   font-family: var(--mono);
   font-size: 9px;

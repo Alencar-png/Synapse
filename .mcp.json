@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "obs": {
+      "command": "node",
+      "args": ["mcp-obs/server.js"],
+      "env": {
+        "OBS_HOST": "127.0.0.1",
+        "OBS_PORT": "4455",
+        "OBS_PASSWORD": "${OBS_PASSWORD:-}"
+      }
+    }
+  }
+}

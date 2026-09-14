@@ -44,12 +44,15 @@ const tasks = require('./tasks');
 const workspace = require('./workspace');
 const transcriptImport = require('./transcript-import');
 const { readFileTolerant, unlinkTolerant } = require('./unicode-path');
+const { dockerRemove, killTree } = require('./process-kill');
+const obs = require('./obs');
+const flows = require('./flows');
+const flowRunner = require('./flow-runner');
 const promptsStore = require('./prompts-store');
 const { createUpdater } = require('./updater');
 const chatMessages = require('./chat-messages');
 const voice = require('./voice');
 const tts = require('./tts');
-const { createChatterboxWorker } = require('./chatterbox-worker');
 const {
   buildChatArgs, buildChatSystemPrompt, describeChatEvent, isMissingSession,
 } = require('./project-chat');
@@ -58,6 +61,22 @@ const {
 } = require('./pipeline-steps');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
+
+// Uma pasta de dados alternativa (testes de ponta a ponta): o app roda inteiro
+// sem tocar nas configurações nem no banco de quem usa a máquina.
+if (process.env.SYNAPSE_USER_DATA) app.setPath('userData', process.env.SYNAPSE_USER_DATA);
+
+// Duas instâncias abririam dois handles no mesmo synapse.db e dois jobs
+// disputariam a mesma pasta. A segunda só traz a primeira para a frente.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  });
+}
 
 // Extensões aceitas no drop. Áudio também vale: o ffmpeg trata os dois.
 const MEDIA_EXTENSIONS = [
@@ -68,10 +87,15 @@ const MEDIA_EXTENSIONS = [
 const DEFAULT_SETTINGS = {
   outputDir: path.join(app.getPath('documents'), 'Transcricoes'),
   engine: 'native',    // 'native' (GPU) ou 'docker' (CPU)
-  model: 'large-v3-turbo',   // modelo do motor docker
+  model: 'large-v3',   // modelo do motor docker — o mais fiel, não o mais rápido
   nativeModel: '',     // caminho do .bin escolhido no motor nativo
   language: 'pt',
   formats: ['md', 'txt'],
+  // Marcar quem falou na transcrição, separando pelo canal do áudio: o
+  // microfone desta máquina de um lado, o som da chamada do outro.
+  diarize: true,
+  // Gravação pelo OBS Studio, via o servidor MCP em mcp-obs/.
+  obs: { ...obs.DEFAULT_OBS },
   // O que roda depois da transcrição; cada etapa liga e desliga sozinha.
   steps: { ...DEFAULT_STEPS },
   // A voz do assistente no chat: neural (Edge, online) ou a do sistema.
@@ -96,12 +120,49 @@ function userPromptsDir() {
   return path.join(app.getPath('userData'), 'prompts');
 }
 
+/**
+ * O fluxo depois da transcrição, como a pessoa montou.
+ *
+ * Fica na pasta de dados do usuário, e não junto do app: atualizar o Synapse
+ * nunca pode apagar as etapas que alguém escreveu. O prompt da análise não é
+ * guardado aqui — ele mora em `prompts/analise.md` (e na edição feita em
+ * Configurações), para não existir em duas versões.
+ */
+function flowPath() {
+  return path.join(app.getPath('userData'), 'flows.json');
+}
+
+function loadFlow() {
+  const analysisPrompt = promptsStore.readPrompt('analise', { userDir: userPromptsDir() }).text;
+  try {
+    return flows.normalizeFlow(JSON.parse(fs.readFileSync(flowPath(), 'utf-8')), { analysisPrompt });
+  } catch {
+    return flows.normalizeFlow(null, { analysisPrompt });   // ainda sem fluxo próprio
+  }
+}
+
+function saveFlow(lista) {
+  const analysisPrompt = promptsStore.readPrompt('analise', { userDir: userPromptsDir() }).text;
+  const normalizado = flows.normalizeFlow(lista, { analysisPrompt });
+  fs.mkdirSync(path.dirname(flowPath()), { recursive: true });
+  // O prompt da análise sai antes de gravar: ele tem dono em outro arquivo.
+  const paraGravar = normalizado.map((s) => (s.builtin ? { ...s, prompt: '' } : s));
+  fs.writeFileSync(flowPath(), JSON.stringify(paraGravar, null, 2), 'utf-8');
+  return normalizado;
+}
+
 function loadSettings() {
   try {
     const raw = fs.readFileSync(settingsPath(), 'utf-8');
     const saved = JSON.parse(raw);
     // Uma etapa nova entra ligada mesmo em configurações gravadas antes dela.
-    return { ...DEFAULT_SETTINGS, ...saved, steps: normalizeSteps(saved.steps), tts: tts.normalizeTts(saved.tts) };
+    return {
+      ...DEFAULT_SETTINGS,
+      ...saved,
+      steps: normalizeSteps(saved.steps),
+      tts: tts.normalizeTts(saved.tts),
+      obs: obs.normalizeObs(saved.obs),
+    };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -273,7 +334,9 @@ function startJob(payload) {
         windowsHide: true,
         env: {
           ...process.env,
-          ...buildNativeEnv({ cli: native.cli, modelPath, language, threads: 0 }),
+          ...buildNativeEnv({
+            cli: native.cli, modelPath, language, threads: 0, diarize: settings.diarize,
+          }),
         },
       },
     );
@@ -508,11 +571,14 @@ function relocateProjectMeetings(dir, projectId, toRoot, toProjectId) {
 
 async function finishJob(event, outputDir, projectId, autoName = false) {
   const transcricao = event.files.find((f) => f.toLowerCase().endsWith('.md'));
+  const fluxo = loadFlow();
+  const analise = fluxo.find((s) => s.id === flows.ANALYSIS_STEP_ID);
   const plan = planAfterTranscription({
     steps: loadSettings().steps,
     projectId,
     autoName,
     hasTranscript: Boolean(transcricao),
+    analysisEnabled: analise?.enabled !== false,
   });
 
   event.tasksCreated = 0;
@@ -556,6 +622,14 @@ async function finishJob(event, outputDir, projectId, autoName = false) {
     }
   }
 
+  // As etapas que a pessoa escreveu rodam depois da análise, na ordem dela, e
+  // cada uma pode ler o que a anterior gravou.
+  if (transcricao) {
+    event.stepFiles = await runFlowSteps({
+      fluxo, outputDir, meetingId: event.meetingId, transcriptPath: transcricao, projectId,
+    });
+  }
+
   // A janela precisa saber se ainda vem documento: com a lista vazia, a
   // reunião está pronta aqui mesmo.
   event.docs = event.meetingId ? plan.docs : [];
@@ -564,6 +638,77 @@ async function finishJob(event, outputDir, projectId, autoName = false) {
   // O documento ligado em Configurações sai sozinho. Fora do caminho do aviso
   // de pronto: a transcrição já está na tela enquanto o PDF é montado.
   if (event.docs.length) enqueueDocs(event.meetingId, event.docs);
+}
+
+/**
+ * Roda as etapas que a pessoa escreveu, depois da análise.
+ *
+ * Uma etapa que falha não derruba as outras nem a reunião: a transcrição já
+ * está no disco, e o que se perde é aquele arquivo. O motivo vai para o log da
+ * janela com o nome da etapa na frente, porque "falhou" sem dizer qual não
+ * ajuda ninguém a consertar o prompt.
+ *
+ * Devolve os arquivos que nasceram aqui, para o painel da reunião listá-los.
+ */
+async function runFlowSteps({ fluxo, outputDir, meetingId, transcriptPath, projectId }) {
+  const extras = fluxo.filter((s) => s.id !== flows.ANALYSIS_STEP_ID && s.enabled);
+  if (!extras.length) return [];
+
+  const meeting = library.getMeeting(outputDir, meetingId);
+  const project = projectId ? projects.getProject(outputDir, projectId) : null;
+  const plano = flowRunner.planSteps(fluxo, {
+    meetingDir: meeting?.dir || '',
+    analysisPath: meeting ? analysisPath(meeting.dir, meeting.legacy) : '',
+    transcriptPath,
+    context: project?.context || '',
+    meetingName: meeting?.name || '',
+    projectName: project?.name || '',
+  }).filter((item) => item.step.id !== flows.ANALYSIS_STEP_ID);
+
+  const gerados = [];
+  for (const [i, item] of plano.entries()) {
+    const rótulo = flowRunner.describeStepProgress(item.step, i, plano.length);
+    send('job:event', {
+      event: 'stage',
+      key: 'analyze',
+      progress: Math.round(((i + 1) / (plano.length + 1)) * 100),
+      detail: rótulo,
+    });
+
+    const { ok, message } = await runClaudeStep(item);
+    if (!ok) {
+      send('job:log', `Etapa "${item.step.name}": ${message}`);
+      continue;
+    }
+    if (item.outputPath && fs.existsSync(item.outputPath)) gerados.push(item.outputPath);
+    else if (item.outputPath) {
+      send('job:log', `Etapa "${item.step.name}": terminou sem gravar ${path.basename(item.outputPath)}.`);
+    }
+  }
+  return gerados;
+}
+
+/** Um `claude -p` para uma etapa do fluxo. Nunca lança: devolve o motivo. */
+function runClaudeStep({ step, prompt, args }) {
+  return new Promise((resolve) => {
+    const child = spawn(findClaude(), args, { cwd: PROJECT_ROOT, windowsHide: true });
+    currentExtraction = child;
+    child.stdin.write(prompt);
+    child.stdin.end();
+
+    let erro = '';
+    child.stderr.on('data', (d) => { erro = (erro + d.toString()).slice(-1000); });
+    child.on('error', (err) => {
+      currentExtraction = null;
+      resolve({ ok: false, message: `não foi possível executar o Claude Code (${err.code || err.message}).` });
+    });
+    child.on('close', (code) => {
+      currentExtraction = null;
+      if (code === 0) { resolve({ ok: true, message: '' }); return; }
+      const ultima = erro.split('\n').filter(Boolean).pop() || `código ${code}`;
+      resolve({ ok: false, message: `${step.skill ? `a skill ${step.skill} ` : ''}terminou com erro (${ultima}).` });
+    });
+  });
 }
 
 /**
@@ -815,11 +960,7 @@ function cancelDocJob() {
   currentDocJob.canceled = true;
   const child = currentDocJob.child;
   if (!child) return { canceled: true };
-  if (process.platform === 'win32') {
-    spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
-  } else {
-    child.kill();
-  }
+  killTree(child);
   return { canceled: true };
 }
 
@@ -899,6 +1040,23 @@ ipcMain.handle('tasks:delete', (_e, id) => tasks.deleteTask(outDir(), id));
 ipcMain.handle('job:start', (_e, payload) => startJob(payload));
 ipcMain.handle('job:recording', (_e, payload) => startRecordingJob(payload));
 ipcMain.handle('job:cancel', () => cancelJob());
+
+// Gravação pelo OBS Studio. Tudo passa pelo servidor MCP em mcp-obs/ — o
+// mesmo que o assistente do projeto pode usar no chat.
+ipcMain.handle('obs:status', () => obs.status(loadSettings().obs));
+ipcMain.handle('obs:start', () => obs.startRecording(loadSettings().obs));
+ipcMain.handle('obs:stop', () => obs.stopRecording(loadSettings().obs));
+ipcMain.handle('obs:recordingStatus', () => obs.recordingStatus(loadSettings().obs));
+ipcMain.handle('obs:pause', (_e, { resume = false } = {}) =>
+  obs.pauseRecording(loadSettings().obs, resume));
+/**
+ * A gravação do OBS entra no pipeline como qualquer vídeo solto na janela.
+ *
+ * Sem `cleanup`: o arquivo é do OBS, está na pasta de vídeos de quem gravou, e
+ * apagá-lo depois de transcrever seria apagar material que não é nosso.
+ */
+ipcMain.handle('obs:process', (_e, { videoPath, name, projectId }) =>
+  startJob({ videoPath, name, projectId }));
 ipcMain.handle('transcript:import', (_e, payload) => importTranscriptJob(payload));
 
 // Documentos: o front manda o id da reunião; aqui viram caminho e contexto.
@@ -931,6 +1089,20 @@ ipcMain.handle('prompt:save', (_e, { kind, text }) =>
   promptsStore.savePrompt(kind, text, { userDir: userPromptsDir() }));
 ipcMain.handle('prompt:reset', (_e, kind) => promptsStore.resetPrompt(kind, { userDir: userPromptsDir() }));
 
+// Fluxo depois da transcrição: as etapas que a pessoa escreveu.
+ipcMain.handle('flow:list', () => ({
+  steps: loadFlow(),
+  placeholders: flows.PLACEHOLDERS,
+  inputs: flows.INPUTS,
+  outputs: flows.OUTPUTS,
+}));
+ipcMain.handle('flow:save', (_e, steps) => {
+  const inválida = (steps || []).find((s) => s.id !== flows.ANALYSIS_STEP_ID && flows.validateStep(s));
+  if (inválida) return { ok: false, message: flows.validateStep(inválida) };
+  return { ok: true, steps: saveFlow(steps) };
+});
+ipcMain.handle('flow:new', () => flows.newStep());
+
 // Chat por projeto — o RAG entra no M3 (embeddings + Vector DB).
 // --- Chat do projeto --------------------------------------------------------
 
@@ -942,6 +1114,10 @@ function chatMeetings(dir, projectId) {
   return workspace.listMeetings(dir, projectId).map((m) => {
     const analise = m.dir && path.resolve(m.dir) !== path.resolve(dir) ? analysisPath(m.dir, false) : null;
     return {
+      // A pasta própria da reunião é o que o chat libera para leitura, uma a
+      // uma. Reunião do formato antigo (arquivos soltos na raiz de saída) não
+      // tem pasta só dela e fica sem liberação: a raiz é de todo mundo.
+      dir: m.dir && path.resolve(m.dir) !== path.resolve(dir) ? m.dir : '',
       name: m.name,
       recordedAt: m.recordedAt,
       transcriptPath: m.transcriptPath,
@@ -949,6 +1125,41 @@ function chatMeetings(dir, projectId) {
       documentPath: (m.files || []).find((f) => f.name.includes(' - Documento.'))?.path || '',
     };
   });
+}
+
+/**
+ * A pasta onde o chat do projeto roda.
+ *
+ * Com pasta de trabalho, é ela: o assistente trabalha no repositório ou na
+ * pasta de documentos que a pessoa deu ao projeto. Sem ela, o chat ganha uma
+ * pasta só sua dentro dos dados do app — e **não** a pasta de saída, que
+ * guarda o material de todos os projetos. O diretório de trabalho do processo
+ * é lido sem precisar de liberação nenhuma; apontá-lo para a raiz comum daria
+ * ao assistente de um projeto o arquivo de outro de graça.
+ */
+function chatWorkdir(project, projectId) {
+  if (project.workdir && fs.existsSync(project.workdir)) return project.workdir;
+  const propria = path.join(app.getPath('userData'), 'chats', projectId);
+  fs.mkdirSync(propria, { recursive: true });
+  return propria;
+}
+
+/**
+ * As pastas que o chat pode ler além da sua.
+ *
+ * Com pasta de trabalho, as reuniões do projeto moram todas em `synapse/`
+ * dentro dela, e liberar essa pasta basta. Sem ela, as reuniões estão na raiz
+ * de saída misturadas com as dos outros projetos: aí vai cada pasta de reunião
+ * deste projeto, uma a uma, em vez da raiz inteira.
+ */
+function chatAddDirs({ dir, project, workdir, meetingsDir, meetings = [] }) {
+  const raiz = path.resolve(dir);
+  const casa = path.resolve(workdir);
+  const candidatos = project.workdir
+    ? [meetingsDir]
+    : meetings.map((m) => m.dir).filter(Boolean);
+  return [...new Set(candidatos.map((d) => path.resolve(d)))]
+    .filter((d) => d !== casa && d !== raiz);
 }
 
 /** Uma rodada do chat: um `claude -p`, do envio da mensagem ao result. */
@@ -1025,16 +1236,16 @@ async function sendChat({ projectId, text }) {
   const message = String(text || '').trim();
   if (!message) return { ok: false, message: 'Escreva algo.' };
 
-  const workdir = project.workdir && fs.existsSync(project.workdir) ? project.workdir : dir;
+  const workdir = chatWorkdir(project, projectId);
   const meetingsDir = library.meetingsRootFor(dir, project);
   const bypass = Boolean(project.chatBypass);
   chatMessages.addMessage(dir, { projectId, role: 'user', text: message });
 
+  const reunioes = chatMeetings(dir, projectId);
   const systemPrompt = buildChatSystemPrompt({
     project,
-    meetings: chatMeetings(dir, projectId),
+    meetings: reunioes,
     tasks: workspace.listTasks(dir, projectId),
-    workspaceDir: dir,
     meetingsDir,
     workdir,
     bypass,
@@ -1050,9 +1261,7 @@ async function sendChat({ projectId, text }) {
     sessionId = randomUUID();
     projects.setChatSession(dir, projectId, sessionId);
   }
-  // Além da pasta de trabalho, o Claude pode ler onde estão as reuniões e o banco.
-  const addDirs = [...new Set([meetingsDir, dir].map((d) => path.resolve(d)))]
-    .filter((d) => d !== path.resolve(workdir));
+  const addDirs = chatAddDirs({ dir, project, workdir, meetingsDir, meetings: reunioes });
   const rodar = () => runChatTurn({ projectId, message, sessionId, resume, bypass, workdir, promptFile, addDirs });
 
   let rodada = await rodar();
@@ -1077,13 +1286,8 @@ async function sendChat({ projectId, text }) {
 function stopChat() {
   if (!currentChat) return { stopped: false };
   currentChat.canceled = true;
-  const { child } = currentChat;
-  if (process.platform === 'win32') {
-    // O claude pode ter filhos (um comando em execução): derruba a árvore.
-    spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
-  } else {
-    child.kill();
-  }
+  // O claude pode ter filhos (um comando em execução): derruba a árvore.
+  killTree(currentChat.child);
   return { stopped: true };
 }
 
@@ -1106,51 +1310,8 @@ ipcMain.handle('chat:setBypass', (_e, { projectId, enabled }) =>
  * A resposta vira áudio com a voz neural. Falha devolve `fallback: true` e o
  * renderer lê com a voz do sistema — a conversa não para por falta de internet.
  */
-const chatterbox = createChatterboxWorker({
-  projectRoot: PROJECT_ROOT,
-  spawn: (cmd, args, opts) => spawn(cmd, args, opts),
-  log: (line) => send('job:log', line),
-  // O python.exe do venv é um lançador: derruba a árvore, não só ele.
-  killTree: (child) => {
-    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
-    else child.kill();
-  },
-});
-
-/**
- * O Chatterbox fala num WAV; lemos e apagamos. Cada frase pronta vai na hora
- * para a janela (`tts:event` chunk), que começa a tocar enquanto o resto é
- * gerado. Falha cai para a voz do sistema.
- */
-async function speakWithChatterbox(text, settings, requestId) {
-  // A primeira fala carrega ~3 GB: sem aviso, parece que nada aconteceu.
-  if (!chatterbox.status().running) send('tts:event', { kind: 'loading', requestId });
-  const out = path.join(app.getPath('temp'), `synapse-fala-${Date.now()}-${process.pid}.wav`);
-  const r = await chatterbox.speak({
-    text, out, ref: settings.tts.refVoice || '', exaggeration: settings.tts.exaggeration,
-    onChunk: ({ index, total, out: parte }) => {
-      try {
-        send('tts:event', { kind: 'chunk', requestId, index, total, audio: fs.readFileSync(parte), mimeType: 'audio/wav' });
-      } catch (err) {
-        send('job:log', `Chatterbox: pedaço ${index}/${total} não pôde ser lido (${err.message}).`);
-      } finally {
-        try { fs.unlinkSync(parte); } catch { /* já removido */ }
-      }
-    },
-  });
-  if (!r.ok) return { ok: false, fallback: true, message: `Chatterbox indisponível: ${r.message} Usando a voz do sistema.` };
-  try {
-    return { ok: true, audio: fs.readFileSync(out), mimeType: 'audio/wav', seconds: r.seconds };
-  } catch (err) {
-    return { ok: false, fallback: true, message: `O Chatterbox não deixou o áudio (${err.message}). Usando a voz do sistema.` };
-  } finally {
-    try { fs.unlinkSync(out); } catch { /* já removido */ }
-  }
-}
-
-ipcMain.handle('tts:speak', (_e, { text, requestId = '' }) => {
+ipcMain.handle('tts:speak', (_e, { text }) => {
   const settings = loadSettings();
-  if (settings.tts.engine === 'chatterbox') return speakWithChatterbox(text, settings, requestId);
   if (settings.tts.engine !== 'neural') return { ok: false, fallback: true, message: '' };
   const native = nativeStatus(PROJECT_ROOT);
   return tts.synthesize({
@@ -1162,15 +1323,7 @@ ipcMain.handle('tts:speak', (_e, { text, requestId = '' }) => {
     tmpDir: app.getPath('temp'),
   });
 });
-ipcMain.handle('tts:options', () => ({ voices: tts.VOICES, rates: tts.RATES, chatterbox: chatterbox.status() }));
-ipcMain.handle('dialog:pickVoiceRef', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Voz de referência (5 a 15 segundos de fala limpa)',
-    properties: ['openFile'],
-    filters: [{ name: 'Áudio', extensions: ['wav', 'mp3', 'flac', 'ogg', 'm4a'] }],
-  });
-  return result.canceled ? null : result.filePaths[0];
-});
+ipcMain.handle('tts:options', () => ({ voices: tts.VOICES, rates: tts.RATES }));
 
 /**
  * Recado de voz do chat vira texto — com o mesmo whisper.cpp das reuniões,
@@ -1279,7 +1432,6 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', () => {
-  chatterbox.stop('saindo');
   db.closeAll();
 });
 
@@ -1290,11 +1442,14 @@ app.on('window-all-closed', () => {
 // Trabalho órfão nunca: se a janela fecha no meio, derruba o job — e o chat.
 app.on('before-quit', () => {
   if (currentChat) stopChat();
+  // O servidor MCP do OBS é filho deste processo: sem isto ele ficaria de pé
+  // depois de o app sumir da tela.
+  obs.shutdown();
   if (!currentJob) return;
   currentJob.canceled = true;
   if (currentJob.containerName) {
-    spawn('docker', ['rm', '-f', currentJob.containerName], { windowsHide: true });
-  } else if (process.platform === 'win32') {
-    spawn('taskkill', ['/pid', String(currentJob.child.pid), '/t', '/f'], { windowsHide: true });
+    dockerRemove(currentJob.containerName);
+  } else {
+    killTree(currentJob.child);
   }
 });

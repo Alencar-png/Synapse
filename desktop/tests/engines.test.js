@@ -13,7 +13,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { after, before, test } = require('node:test');
 
-const { explainNativeFailure, missingModule, nativeStatus } = require('../engines');
+const {
+  buildNativeEnv, explainNativeFailure, listNativeModels, missingModule, modelRank,
+  nativeStatus,
+} = require('../engines');
 
 let tmp;
 before(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'synapse-engines-')); });
@@ -61,4 +64,45 @@ test('nativeStatus prefere o .venv do projeto e cai no python do PATH sem ele', 
   fs.mkdirSync(path.dirname(venvPython), { recursive: true });
   fs.writeFileSync(venvPython, '');
   assert.strictEqual(nativeStatus(tmp).python, venvPython);
+});
+
+/**
+ * Qual modelo o app usa quando ninguém escolhe nenhum.
+ *
+ * A pergunta importa porque a resposta errada é silenciosa: a transcrição sai
+ * do mesmo jeito, só com mais erro de nome e de número — e é dela que saem as
+ * tarefas e o documento. Ordem alfabética e ordem por tamanho dão as duas
+ * respostas erradas, cada uma à sua maneira.
+ */
+test('a lista de modelos vem do mais fiel para o mais leve', () => {
+  const dir = fs.mkdtempSync(path.join(tmp, 'modelos-'));
+  fs.mkdirSync(path.join(dir, '.models'));
+  const escrever = (nome, mb) =>
+    fs.writeFileSync(path.join(dir, '.models', nome), Buffer.alloc(mb * 1048576));
+
+  escrever('ggml-large-v3-turbo.bin', 3);  // menor e alfabeticamente antes
+  escrever('ggml-large-v3.bin', 6);
+  escrever('ggml-small.bin', 1);
+  escrever('ggml-silero-v5.1.2.bin', 1);   // VAD: não transcreve, não conta
+
+  const ids = listNativeModels(dir).map((m) => m.id);
+  assert.deepStrictEqual(ids, ['large-v3', 'large-v3-turbo', 'small']);
+});
+
+test('modelRank põe large-v3 na frente do turbo e o desconhecido no fim', () => {
+  assert.ok(modelRank('large-v3') < modelRank('large-v3-turbo'));
+  assert.ok(modelRank('large-v3-turbo') < modelRank('medium'));
+  assert.ok(modelRank('medium') < modelRank('tiny'));
+  assert.ok(modelRank('tiny') < modelRank('modelo-caseiro'));
+  // Uma variante não listada fica junto da família, não no fim do mundo.
+  assert.ok(modelRank('large-v3-q5_0') < modelRank('modelo-caseiro'));
+});
+
+test('buildNativeEnv leva o pedido de marcar quem fala ao motor', () => {
+  const base = { cli: 'C:\w\whisper-cli.exe', modelPath: 'C:\m\ggml-large-v3.bin', language: 'pt' };
+
+  assert.strictEqual(buildNativeEnv({ ...base, diarize: true }).MEETING_WHISPER_DIARIZE, '1');
+  assert.strictEqual(buildNativeEnv({ ...base, diarize: false }).MEETING_WHISPER_DIARIZE, '0');
+  // Sem dizer nada, não marca: a opção é uma escolha, não um efeito colateral.
+  assert.strictEqual(buildNativeEnv(base).MEETING_WHISPER_DIARIZE, '0');
 });

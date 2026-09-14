@@ -1031,7 +1031,7 @@ async function startVoiceJob(msg, box) {
   const engine = settings?.tts?.engine || 'neural';
   const job = { requestId, box, queue: [], playing: false, done: false, canceled: false, finish: null };
   voiceJobs.set(requestId, job);
-  const ui = mountProgress(box, engine === 'chatterbox' ? 'preparando a voz…' : 'gerando a fala…');
+  const ui = mountProgress(box, 'gerando a fala…');
   ui.cancel.addEventListener('click', () => {
     job.canceled = true;
     voiceJobs.delete(requestId);
@@ -1075,26 +1075,6 @@ async function startVoiceJob(msg, box) {
     pumpQueue(job);
   }
 }
-
-window.api.on('tts:event', (ev) => {
-  const job = ev.requestId ? voiceJobs.get(ev.requestId) : null;
-  if (ev.kind === 'loading') {
-    if (job) job.box.querySelector('.voice-label').textContent = 'carregando o Chatterbox (~30 s na primeira vez)…';
-    else toast('Carregando o Chatterbox pela primeira vez — leva cerca de meio minuto.');
-    return;
-  }
-  if (ev.kind === 'chunk' && job && !job.canceled) {
-    const label = job.box.querySelector('.voice-label');
-    const fill = job.box.querySelector('.voice-fill');
-    const bar = job.box.querySelector('.voice-bar');
-    if (label) label.textContent = `frase ${ev.index} de ${ev.total}`;
-    if (bar) bar.classList.remove('is-indeterminate');
-    if (fill) fill.style.transform = `scaleX(${ev.index / ev.total})`;
-    const blob = new Blob([ev.audio], { type: ev.mimeType || 'audio/wav' });
-    job.queue.push(URL.createObjectURL(blob));
-    pumpQueue(job);
-  }
-});
 
 /** Lê um texto avulso (a amostra de Configurações), sem mensagem nem player. */
 async function speak(text, button = null) {
@@ -1193,12 +1173,6 @@ $('chat-mic').addEventListener('click', async () => {
 
 $('chat-mute').addEventListener('click', stopSpeaking);
 
-window.api.on('tts:event', (ev) => {
-  if (ev.kind === 'loading') {
-    toast('Carregando o Chatterbox pela primeira vez — leva cerca de meio minuto; depois cada frase leva alguns segundos.');
-  }
-});
-
 $('chat-voice').addEventListener('change', (e) => {
   voiceMode = e.target.checked;
   if (!voiceMode) stopSpeaking();
@@ -1274,10 +1248,13 @@ async function checkEngine() {
 function renderSettings() {
   $('set-outdir').textContent = settings.outputDir;
   $('set-language').value = settings.language;
+  $('set-diarize').checked = settings.diarize !== false;
+  renderObsSettings();
   for (const input of $('set-steps').querySelectorAll('input[data-step]')) {
     input.checked = settings.steps?.[input.dataset.step] !== false;
   }
   renderPromptChoices();
+  loadFlow();
   renderUpdateVersion();
   renderTtsSettings();
   const isNative = engines.active === 'native';
@@ -1290,9 +1267,18 @@ function renderSettings() {
 
   const model = $('set-model');
   model.replaceChildren();
+  // O primeiro da lista é o que o app usa quando ninguém escolhe — a lista vem
+  // do main já ordenada por fidelidade, não por tamanho.
   const options = isNative
-    ? engines.native.models.map((m) => ({ id: m.path, label: `${m.id} — ${(m.sizeMB / 1024).toFixed(1)} GB` }))
-    : [{ id: 'small', label: 'small — equilibrado' }, { id: 'large-v3', label: 'large-v3 — mais preciso' }];
+    ? engines.native.models.map((m, i) => ({
+      id: m.path,
+      label: `${m.id} — ${(m.sizeMB / 1024).toFixed(1)} GB${i === 0 ? ' · padrão' : ''}`,
+    }))
+    : [
+      { id: 'large-v3', label: 'large-v3 — o mais fiel · padrão' },
+      { id: 'large-v3-turbo', label: 'large-v3-turbo — o dobro da velocidade' },
+      { id: 'small', label: 'small — para máquina fraca' },
+    ];
   for (const o of options) model.append(new Option(o.label, o.id));
   const saved = isNative ? settings.nativeModel : settings.model;
   if (saved && options.some((o) => o.id === saved)) model.value = saved;
@@ -1316,6 +1302,56 @@ $('set-language').addEventListener('change', async () => {
   settings = await window.api.setSettings({ language: $('set-language').value });
 });
 
+$('set-diarize').addEventListener('change', async () => {
+  settings = await window.api.setSettings({ diarize: $('set-diarize').checked });
+});
+
+// --- OBS Studio -----------------------------------------------------------
+
+/** Desenha a seção do OBS com o que está salvo. */
+function renderObsSettings() {
+  const obs = settings.obs || {};
+  $('set-obs-enabled').checked = Boolean(obs.enabled);
+  $('set-obs-conn').hidden = !obs.enabled;
+  $('set-obs-host').value = obs.host || '127.0.0.1';
+  $('set-obs-port').value = obs.port || 4455;
+  $('set-obs-password').value = obs.password || '';
+}
+
+/** Grava o que está nos campos, sem perder o que não foi tocado. */
+async function saveObsSettings(patch) {
+  settings = await window.api.setSettings({ obs: { ...(settings.obs || {}), ...patch } });
+  renderObsSettings();
+}
+
+$('set-obs-enabled').addEventListener('change', async () => {
+  const enabled = $('set-obs-enabled').checked;
+  await saveObsSettings({ enabled });
+  if (enabled) await testObs();
+});
+
+for (const campo of ['host', 'port', 'password']) {
+  $(`set-obs-${campo}`).addEventListener('change', (e) => {
+    const valor = campo === 'port' ? Number(e.target.value) || 4455 : e.target.value.trim();
+    saveObsSettings({ [campo]: valor });
+  });
+}
+
+/** Testa a conexão e diz o que achou — ou o que falta ligar no OBS. */
+async function testObs() {
+  const alvo = $('set-obs-desc');
+  alvo.textContent = 'procurando o OBS...';
+  const r = await window.api.obsStatus();
+  if (!r.ok) { alvo.textContent = r.message; return; }
+  const faixas = r.separateAudioTracks
+    ? 'faixas de áudio separadas — dá para marcar quem fala'
+    : 'uma faixa de áudio só — não dá para marcar quem fala';
+  alvo.textContent = `OBS ${r.obsVersion} conectado · ${faixas}`;
+  if (r.warning) toast(r.warning);
+}
+
+$('set-obs-test').addEventListener('click', testObs);
+
 $('set-steps').addEventListener('change', async (e) => {
   const input = e.target.closest('input[data-step]');
   if (!input) return;
@@ -1329,36 +1365,16 @@ $('set-steps').addEventListener('change', async (e) => {
 let ttsOptions = null;
 
 async function renderTtsSettings() {
-  ttsOptions = await window.api.ttsOptions();   // o estado do Chatterbox pode mudar
+  ttsOptions = await window.api.ttsOptions();
   const cfg = settings.tts || {};
-  const engine = ['neural', 'chatterbox', 'system'].includes(cfg.engine) ? cfg.engine : 'neural';
+  const engine = ['neural', 'system'].includes(cfg.engine) ? cfg.engine : 'neural';
   const neural = engine === 'neural';
-  const cb = engine === 'chatterbox';
   for (const b of $('set-tts-engine').children) {
     b.classList.toggle('is-active', b.dataset.engine === engine);
   }
-  const cbStatus = ttsOptions.chatterbox || {};
   $('set-tts-engine-desc').textContent = neural
     ? 'vozes neurais do Edge: entonação natural, precisa de internet'
-    : cb
-      ? (cbStatus.ok
-        ? `Chatterbox V3 pt-BR: entonação natural, offline${cbStatus.device ? ` · ${cbStatus.device}` : ''}${cbStatus.running ? ' · carregado' : ''}`
-        : cbStatus.message || 'Chatterbox não instalado')
-      : 'voz instalada no Windows: instantânea, sem entonação, offline';
-  $('set-tts-sample-desc').textContent = cb
-    ? 'a primeira vez carrega o modelo (~30 s); depois, alguns segundos por frase'
-    : 'ouça o motor e a voz escolhidos';
-
-  $('set-tts-voice-row').hidden = cb;
-  $('set-tts-rate-row').hidden = cb;
-  $('set-tts-ref-row').hidden = !cb;
-  $('set-tts-exag-row').hidden = !cb;
-  if (cb) {
-    $('set-tts-ref').textContent = cfg.refVoice || 'voz padrão do modelo';
-    $('set-tts-ref').title = cfg.refVoice || '';
-    $('set-tts-exag').value = String(cfg.exaggeration ?? 0.5);
-    return;
-  }
+    : 'voz instalada no Windows: instantânea, sem entonação, offline';
 
   const voz = $('set-tts-voice');
   if (neural) {
@@ -1405,12 +1421,6 @@ $('set-tts-rate').addEventListener('change', () => saveTts({ rate: $('set-tts-ra
 $('set-tts-sample').addEventListener('click', () => {
   speak('Olá! Na última reunião ficou combinado repetir o teste de onboarding na quinta. Quer que eu crie a tarefa?', $('set-tts-sample'));
 });
-$('set-tts-ref-pick').addEventListener('click', async () => {
-  const file = await window.api.pickVoiceRef();
-  if (file) saveTts({ refVoice: file });
-});
-$('set-tts-ref-clear').addEventListener('click', () => saveTts({ refVoice: '' }));
-$('set-tts-exag').addEventListener('change', () => saveTts({ exaggeration: Number($('set-tts-exag').value) }));
 
 // --- Atualização do app -----------------------------------------------------------------
 
@@ -1743,7 +1753,9 @@ $('md-cancel').addEventListener('click', () => closeDanger(false));
 
 function closeModals() {
   $('modal-scrim').hidden = true;
-  for (const id of ['modal-project', 'modal-task', 'modal-confirm', 'modal-prompt']) $(id).hidden = true;
+  for (const id of ['modal-project', 'modal-task', 'modal-confirm', 'modal-prompt', 'modal-step']) {
+    $(id).hidden = true;
+  }
 }
 $('modal-scrim').addEventListener('click', closeModals);
 window.addEventListener('keydown', (e) => {
@@ -1941,26 +1953,46 @@ window.addEventListener('drop', (e) => {
 // --- Gravação -----------------------------------------------------------------
 
 /**
- * Grava a reunião pelo app: junta o microfone e o áudio que sai pelos
- * alto-falantes num arquivo só. Numa chamada online o microfone traz o nosso
- * lado e o loopback do sistema traz o resto da sala — gravar só o microfone
- * daria uma transcrição pela metade.
+ * Grava a reunião pelo app: o microfone e o áudio que sai pelos alto-falantes
+ * num arquivo só. Numa chamada online o microfone traz o nosso lado e o
+ * loopback do sistema traz o resto da sala — gravar só o microfone daria uma
+ * transcrição pela metade.
+ *
+ * As duas fontes não são misturadas: cada uma vai para um canal do estéreo —
+ * **microfone à esquerda, sistema à direita**. Somadas num canal só, as vozes
+ * ficam indistinguíveis para sempre; separadas, o whisper.cpp compara a
+ * energia dos dois lados e diz de qual veio cada fala, e a transcrição sai
+ * dizendo quem falou. É a única etapa do caminho onde essa informação existe:
+ * depois da mixagem, nenhum processamento a traz de volta.
  */
 let recorder = null;
 let recStreams = [];
 let recChunks = [];
 
 async function captureAudio() {
-  const trilhas = [];
   const contexto = new AudioContext();
   const destino = contexto.createMediaStreamDestination();
+  // Dois canais de saída, um por fonte. O merger aceita entradas mono e as
+  // coloca cada uma no seu lado.
+  const merger = contexto.createChannelMerger(2);
+  merger.connect(destino);
   let mic = false;
   let sistema = false;
+
+  /** Liga a fonte num único canal do estéreo, seja ela mono ou já estéreo. */
+  const ligar = (stream, canal) => {
+    const fonte = contexto.createMediaStreamSource(stream);
+    // Um microfone estéreo entregaria duas saídas e vazaria para o outro lado.
+    // O splitter garante que só o primeiro canal da fonte seja usado.
+    const splitter = contexto.createChannelSplitter(2);
+    fonte.connect(splitter);
+    splitter.connect(merger, 0, canal);
+  };
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     recStreams.push(stream);
-    contexto.createMediaStreamSource(stream).connect(destino);
+    ligar(stream, 0);   // esquerda: quem está nesta máquina
     mic = true;
   } catch { /* sem microfone: seguimos com o que houver */ }
 
@@ -1971,7 +2003,7 @@ async function captureAudio() {
     recStreams.push(stream);
     stream.getVideoTracks().forEach((t) => t.stop());
     if (stream.getAudioTracks().length) {
-      contexto.createMediaStreamSource(stream).connect(destino);
+      ligar(stream, 1);   // direita: o resto da chamada
       sistema = true;
     }
   } catch { /* sem loopback: microfone basta */ }
@@ -1981,8 +2013,15 @@ async function captureAudio() {
     return null;
   }
 
-  trilhas.push(...destino.stream.getAudioTracks());
-  return { stream: new MediaStream(trilhas), contexto, mic, sistema };
+  return {
+    stream: new MediaStream(destino.stream.getAudioTracks()),
+    contexto,
+    mic,
+    sistema,
+    // Com uma fonte só, os dois canais não têm o que separar: o motor percebe
+    // isso e transcreve sem atribuir falante, em vez de marcar tudo errado.
+    estereo: mic && sistema,
+  };
 }
 
 function releaseAudio(contexto) {
@@ -1999,10 +2038,48 @@ function releaseAudio(contexto) {
  * onde cair. `preferido` apenas deixa o seletor já na opção certa quando a
  * gravação parte de dentro de um projeto.
  */
+/**
+ * Quem grava: o OBS, quando está ligado nas configurações e no ar; senão, a
+ * própria janela.
+ *
+ * O OBS é preferido porque grava o microfone e o áudio da máquina em faixas
+ * separadas do arquivo — separação limpa, sem vazamento de um lado no outro —
+ * e porque não depende desta janela continuar viva. A captura do app fica como
+ * reserva: ela existe para quem não tem OBS, e continua sendo o caminho de um
+ * clique só.
+ */
+let obsRecording = false;
+
+async function tryStartObs() {
+  const estado = await window.api.obsStatus();
+  if (!estado.ok) {
+    // OBS desligado nas configurações não é falha: é a escolha de quem usa.
+    if (estado.enabled) toast(`OBS indisponível: ${estado.message} Gravando pelo app.`);
+    return null;
+  }
+  if (estado.recording) {
+    toast('O OBS já está gravando. Pare a gravação dele antes.');
+    return null;
+  }
+  const r = await window.api.obsStart();
+  if (!r.ok) { toast(`Não deu para gravar pelo OBS: ${r.message} Gravando pelo app.`); return null; }
+  if (estado.warning) toast(estado.warning);
+  return estado;
+}
+
 async function startRecording(preferido = '') {
   if (busyWarning()) return;
   if (!engineReady) { toast('O motor de transcrição não está disponível.'); return; }
-  if (recorder) { toast('Já existe uma gravação em andamento.'); return; }
+  if (recorder || obsRecording) { toast('Já existe uma gravação em andamento.'); return; }
+
+  const viaObs = await tryStartObs();
+  if (viaObs) {
+    obsRecording = true;
+    openRecordingOverlay(preferido, viaObs.separateAudioTracks
+      ? 'OBS Studio — faixas separadas, para marcar quem fala'
+      : 'OBS Studio — uma faixa só');
+    return;
+  }
 
   const captura = await captureAudio();
   if (!captura) {
@@ -2011,11 +2088,24 @@ async function startRecording(preferido = '') {
   }
 
   recChunks = [];
-  recorder = new MediaRecorder(captura.stream, { mimeType: 'audio/webm' });
+  // O Opus guarda os dois canais; o padrão do MediaRecorder já basta, mas a
+  // taxa explícita evita que o navegador economize justamente na separação
+  // entre os lados, que é o que permite saber quem falou.
+  recorder = new MediaRecorder(captura.stream, {
+    mimeType: 'audio/webm;codecs=opus',
+    audioBitsPerSecond: 128000,
+  });
   recorder.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
   recorder.onstop = () => releaseAudio(captura.contexto);
   recorder.start(1000);   // um bloco por segundo: perda máxima de 1s se travar
 
+  openRecordingOverlay(preferido, captura.estereo
+    ? 'microfone + áudio do sistema — em canais separados, para marcar quem fala'
+    : (captura.sistema ? 'somente áudio do sistema' : 'somente microfone'));
+}
+
+/** A tela de gravação em andamento — a mesma para o OBS e para o app. */
+function openRecordingOverlay(preferido, fonte) {
   const select = $('record-project');
   select.replaceChildren();
   const semProjeto = document.createElement('option');
@@ -2031,9 +2121,7 @@ async function startRecording(preferido = '') {
   select.value = preferido || '';
 
   $('record-clock').textContent = '00:00';
-  $('record-fonte').textContent = captura.sistema
-    ? 'microfone + áudio do sistema'
-    : 'somente microfone';
+  $('record-fonte').textContent = fonte;
   $('overlay-record').hidden = false;
   if (!recordNet) recordNet = window.createNetwork($('record-net'));
   window.dispatchEvent(new Event('resize'));
@@ -2068,23 +2156,53 @@ function finishRecording() {
 
 $('record-cancel').addEventListener('click', async () => {
   stopRecordingUI();
+  if (obsRecording) {
+    obsRecording = false;
+    // O OBS já escreveu o arquivo: cancelar aqui só quer dizer que ele não
+    // vira reunião. Apagar o vídeo seria mexer no que é da pessoa.
+    const r = await window.api.obsStop();
+    toast(r.ok && r.outputPath
+      ? 'Gravação descartada. O arquivo do OBS continua na pasta de vídeos.'
+      : 'Gravação descartada.');
+    return;
+  }
   await finishRecording();   // descarta o áudio: cancelar é cancelar
   toast('Gravação descartada.');
 });
 
+/** O nome que a reunião recebe antes de a análise sugerir um melhor. */
+const nomeDaGravacao = () =>
+  `Reunião ${fmtDate(Date.now())} ${new Date().getHours()}h${pad(new Date().getMinutes())}`;
+
 $('record-stop').addEventListener('click', async () => {
   const duration = (Date.now() - recStartedAt) / 1000;
+  const projectId = $('record-project').value;
   stopRecordingUI();
+
+  if (obsRecording) {
+    obsRecording = false;
+    const parada = await window.api.obsStop();
+    if (!parada.ok) { toast(`O OBS não parou a gravação: ${parada.message}`); return; }
+    if (!parada.outputPath) { toast('O OBS parou, mas não disse onde gravou o arquivo.'); return; }
+
+    const name = nomeDaGravacao();
+    startProcessing(name, projectId);
+    const result = await window.api.obsProcess({ videoPath: parada.outputPath, name, projectId });
+    if (result && result.started === false) {
+      stopProcessing();
+      toast(`Não deu para processar: ${result.message}`);
+    }
+    return;
+  }
 
   const blob = await finishRecording();
   if (!blob) { toast('A gravação saiu vazia.'); return; }
 
-  const name = `Reunião ${fmtDate(Date.now())} ${new Date().getHours()}h${pad(new Date().getMinutes())}`;
-  const projectId = $('record-project').value;
+  const name = nomeDaGravacao();
   startProcessing(name, projectId);
 
   const result = await window.api.processRecording({
-    projectId: currentProjectId,
+    projectId,
     name,
     duration,
     audio: await blob.arrayBuffer(),
@@ -2194,8 +2312,8 @@ function cancelCurrent() {
 function busyWarning() {
   if (!proc.active) return false;
   toast(`Espere <strong>${proc.name || 'o processamento'}</strong> terminar — o progresso está na barra lateral.`);
-  if (proc.minimized) $('jobchip-main').classList.add('is-nudged');
-  setTimeout(() => $('jobchip-main').classList.remove('is-nudged'), 900);
+  if (proc.minimized) $('jobchip-open').classList.add('is-nudged');
+  setTimeout(() => $('jobchip-open').classList.remove('is-nudged'), 900);
   return true;
 }
 
@@ -2252,15 +2370,15 @@ async function renderPromptChoices() {
 async function openPromptModal(kind) {
   const p = await window.api.getPrompt(kind);
   editingPromptKind = kind;
-  $('mp-title').textContent = p.label || 'Prompt';
-  $('mp-status').textContent = p.isCustom
+  $('mpr-title').textContent = p.label || 'Prompt';
+  $('mpr-status').textContent = p.isCustom
     ? 'editado por você — o padrão do app segue guardado'
     : 'padrão do app';
-  $('mp-text').value = p.text;
-  $('mp-reset').hidden = !p.isCustom;
-  $('mp-error').textContent = '';
+  $('mpr-text').value = p.text;
+  $('mpr-reset').hidden = !p.isCustom;
+  $('mpr-error').textContent = '';
 
-  const help = $('mp-help');
+  const help = $('mpr-help');
   help.replaceChildren('O app preenche na hora os trechos entre chaves: ');
   p.placeholders.forEach((ph, i) => {
     const code = document.createElement('code');
@@ -2271,7 +2389,7 @@ async function openPromptModal(kind) {
   help.append(`. Obrigatórios: ${p.required.join(', ')}.`);
 
   openModal('modal-prompt');
-  $('mp-text').focus();
+  $('mpr-text').focus();
 }
 
 $('set-prompt-open').addEventListener('click', () => {
@@ -2279,21 +2397,218 @@ $('set-prompt-open').addEventListener('click', () => {
   if (kind) openPromptModal(kind);
 });
 
-$('mp-form').addEventListener('submit', async (e) => {
+$('mpr-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const r = await window.api.savePrompt(editingPromptKind, $('mp-text').value);
-  if (!r.ok) { $('mp-error').textContent = r.message; return; }
+  const r = await window.api.savePrompt(editingPromptKind, $('mpr-text').value);
+  if (!r.ok) { $('mpr-error').textContent = r.message; return; }
   closeModals();
   toast(r.isCustom ? 'Prompt salvo — vale a partir da próxima reunião.' : 'Prompt igual ao padrão: nada a guardar.');
 });
 
-$('mp-reset').addEventListener('click', async () => {
+$('mpr-reset').addEventListener('click', async () => {
   await window.api.resetPrompt(editingPromptKind);
   await openPromptModal(editingPromptKind);
   toast('Prompt restaurado ao padrão do app.');
 });
 
-$('mp-cancel').addEventListener('click', closeModals);
+$('mpr-cancel').addEventListener('click', closeModals);
+
+// --- Seu fluxo: etapas próprias depois da transcrição ----------------------
+
+let flowSteps = [];
+let flowPlaceholders = {};
+let editingStepId = '';
+
+/** Como cada etapa se descreve na lista, em uma linha. */
+function stepSummary(step) {
+  const entrada = {
+    transcricao: 'lê a transcrição',
+    analise: 'lê a análise',
+    anterior: 'lê o que a etapa anterior gravou',
+  }[step.input] || 'lê a transcrição';
+  const saida = step.output === 'nenhuma' ? 'não grava arquivo' : `grava ${step.fileName}`;
+  return `${entrada} · ${saida}`;
+}
+
+function renderFlow() {
+  const lista = $('flow-list');
+  lista.replaceChildren();
+
+  flowSteps.forEach((step, i) => {
+    const linha = document.createElement('div');
+    linha.className = `flow-step${step.enabled ? '' : ' is-off'}`;
+
+    const ordem = document.createElement('span');
+    ordem.className = 'flow-order';
+    ordem.textContent = String(i + 1);
+
+    const corpo = document.createElement('div');
+    corpo.className = 'flow-body';
+    const nome = document.createElement('span');
+    nome.className = 'flow-name';
+    nome.textContent = step.name;
+    const meta = document.createElement('span');
+    meta.className = 'flow-meta';
+    if (step.skill) {
+      const tag = document.createElement('span');
+      tag.className = 'flow-tag';
+      tag.textContent = `skill: ${step.skill}`;
+      meta.append(tag);
+    }
+    meta.append(step.builtin ? step.description : stepSummary(step));
+    corpo.append(nome, meta);
+
+    const acoes = document.createElement('div');
+    acoes.className = 'flow-actions';
+
+    const subir = document.createElement('button');
+    subir.className = 'flow-move';
+    subir.type = 'button';
+    subir.textContent = '↑';
+    subir.title = 'Subir uma posição';
+    subir.disabled = i === 0;
+    subir.addEventListener('click', () => moveFlowStep(step.id, -1));
+
+    const descer = document.createElement('button');
+    descer.className = 'flow-move';
+    descer.type = 'button';
+    descer.textContent = '↓';
+    descer.title = 'Descer uma posição';
+    descer.disabled = i === flowSteps.length - 1;
+    descer.addEventListener('click', () => moveFlowStep(step.id, 1));
+
+    const editar = document.createElement('button');
+    editar.className = 'btn ghost';
+    editar.type = 'button';
+    editar.textContent = step.builtin ? 'Ver prompt' : 'Editar';
+    editar.addEventListener('click', () => {
+      // O prompt da análise tem editor próprio: é o mesmo texto que vive em
+      // prompts/analise.md, e editá-lo em dois lugares daria duas versões.
+      if (step.builtin) openPromptModal('analise');
+      else openStepModal(step.id);
+    });
+
+    const ligar = document.createElement('input');
+    ligar.className = 'switch';
+    ligar.type = 'checkbox';
+    ligar.checked = step.enabled;
+    ligar.title = step.enabled ? 'Ligada' : 'Desligada';
+    ligar.addEventListener('change', () => {
+      flowSteps = flowSteps.map((x) => (x.id === step.id ? { ...x, enabled: ligar.checked } : x));
+      persistFlow();
+    });
+
+    acoes.append(subir, descer, editar, ligar);
+    linha.append(ordem, corpo, acoes);
+    lista.append(linha);
+  });
+
+  const extras = flowSteps.filter((s) => !s.builtin).length;
+  $('flow-status').textContent = extras
+    ? `${extras} etapa(s) sua(s), além da análise.`
+    : 'Só a análise por enquanto. Crie uma etapa para gerar outros documentos.';
+}
+
+async function loadFlow() {
+  const r = await window.api.listFlow();
+  flowSteps = r.steps || [];
+  flowPlaceholders = r.placeholders || {};
+  renderFlow();
+}
+
+async function persistFlow() {
+  const r = await window.api.saveFlow(flowSteps);
+  if (!r.ok) { toast(r.message); return false; }
+  flowSteps = r.steps;
+  renderFlow();
+  return true;
+}
+
+function moveFlowStep(id, delta) {
+  const i = flowSteps.findIndex((s) => s.id === id);
+  const j = i + delta;
+  if (i < 0 || j < 0 || j >= flowSteps.length) return;
+  const copia = [...flowSteps];
+  [copia[i], copia[j]] = [copia[j], copia[i]];
+  flowSteps = copia;
+  persistFlow();
+}
+
+/** Abre o editor de uma etapa — existente, ou uma nova em branco. */
+async function openStepModal(id = '') {
+  const step = id ? flowSteps.find((s) => s.id === id) : await window.api.newFlowStep();
+  if (!step) return;
+
+  editingStepId = id;
+  $('mst-title').textContent = id ? 'Editar etapa' : 'Nova etapa';
+  $('mst-name').value = id ? step.name : '';
+  $('mst-input').value = step.input;
+  $('mst-output').value = step.output;
+  $('mst-file').value = step.fileName;
+  $('mst-skill').value = step.skill;
+  $('mst-prompt').value = step.prompt;
+  $('mst-error').textContent = '';
+  $('mst-delete').hidden = !id;
+  $('mst-file').closest('.field').hidden = step.output === 'nenhuma';
+
+  const help = $('mst-help');
+  help.replaceChildren('O app troca estes trechos pelos caminhos da reunião: ');
+  Object.entries(flowPlaceholders).forEach(([marca, oque], i) => {
+    if (i) help.append(', ');
+    const code = document.createElement('code');
+    code.textContent = marca;
+    help.append(code, ` (${oque})`);
+  });
+
+  openModal('modal-step');
+  $('mst-name').focus();
+}
+
+$('flow-add').addEventListener('click', () => openStepModal());
+
+$('mst-output').addEventListener('change', () => {
+  // Etapa que não grava nada não precisa de nome de arquivo.
+  $('mst-file').closest('.field').hidden = $('mst-output').value === 'nenhuma';
+});
+
+$('mst-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const editado = {
+    name: $('mst-name').value,
+    input: $('mst-input').value,
+    output: $('mst-output').value,
+    fileName: $('mst-file').value,
+    skill: $('mst-skill').value.trim(),
+    prompt: $('mst-prompt').value,
+    enabled: true,
+  };
+
+  const anterior = flowSteps;
+  // Etapa nova vai sem id: quem gera é o processo principal, na normalização.
+  flowSteps = editingStepId
+    ? flowSteps.map((s) => (s.id === editingStepId ? { ...s, ...editado } : s))
+    : [...flowSteps, editado];
+
+  if (!(await persistFlow())) { flowSteps = anterior; return; }
+  closeModals();
+  toast('Etapa salva — vale a partir da próxima reunião.');
+});
+
+$('mst-delete').addEventListener('click', async () => {
+  const step = flowSteps.find((s) => s.id === editingStepId);
+  const ok = await confirmDanger({
+    title: 'Excluir esta etapa?',
+    message: `"${step?.name || 'A etapa'}" para de rodar depois das transcrições. `
+      + 'Os arquivos que ela já gerou ficam onde estão.',
+  });
+  if (!ok) return;
+  flowSteps = flowSteps.filter((s) => s.id !== editingStepId);
+  await persistFlow();
+  closeModals();
+  toast('Etapa excluída.');
+});
+
+$('mst-cancel').addEventListener('click', closeModals);
 
 function enterDocPhase(meetingId, kinds = DOC_KINDS_ALL, { name } = {}) {
   docPhase = true;
@@ -2423,9 +2738,25 @@ async function refreshAll() {
 
 // --- Início -----------------------------------------------------------------
 
+/**
+ * Erros que escapariam para o console viram um aviso na tela. Sem isso, uma
+ * exceção num handler ou uma promise rejeitada some em silêncio — e a pessoa
+ * só vê "algo estranho" sem saber o quê.
+ */
+function describeError(err) {
+  const raw = err instanceof Error ? err.message : String(err ?? 'erro desconhecido');
+  return raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+}
+window.addEventListener('error', (e) => toast(`Erro na interface: ${describeError(e.error || e.message)}`));
+window.addEventListener('unhandledrejection', (e) => toast(`Erro na interface: ${describeError(e.reason)}`));
+
 (async function init() {
-  settings = await window.api.getSettings();
-  await checkEngine();
-  await refreshProjects();
+  try {
+    settings = await window.api.getSettings();
+    await checkEngine();
+    await refreshProjects();
+  } catch (err) {
+    toast(`Não deu para carregar o workspace: ${describeError(err)}`);
+  }
   setView('home');
 })();

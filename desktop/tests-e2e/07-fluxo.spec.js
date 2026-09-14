@@ -14,8 +14,21 @@ const { test, expect, waitForHome } = require('./fixtures');
 
 const PROMPT_VALIDO = 'Leia {{TRANSCRICAO}} e escreva um resumo curto em {{SAIDA}}.';
 
-async function abrirFluxo(page) {
+/**
+ * Vai para Configurações e espera a tela estar de fato ativa.
+ *
+ * Só clicar não basta: a troca de tela é um atributo no `#app`, e sob carga o
+ * clique pode chegar antes de o app terminar de abrir. Afirmar um elemento da
+ * tela nesse intervalo falha por dez segundos seguidos, sem que haja nada
+ * errado com a tela.
+ */
+async function irParaConfiguracoes(page) {
   await page.locator('#nav-settings').click();
+  await expect(page.locator('#app')).toHaveAttribute('data-view', 'settings');
+}
+
+async function abrirFluxo(page) {
+  await irParaConfiguracoes(page);
   const lista = page.locator('#flow-list');
   await expect(lista.locator('.flow-step')).not.toHaveCount(0);
   return lista;
@@ -171,7 +184,7 @@ test.describe('fluxo depois da transcrição', () => {
 test.describe('configurações novas', () => {
   test('marcar quem fala aparece e guarda a escolha', async ({ page, errors }) => {
     await waitForHome(page);
-    await page.locator('#nav-settings').click();
+    await irParaConfiguracoes(page);
 
     const toggle = page.locator('#set-diarize');
     await expect(toggle).toBeVisible();
@@ -180,7 +193,7 @@ test.describe('configurações novas', () => {
     await toggle.uncheck();
     // Sai da tela e volta: a escolha veio do disco, não da memória da página.
     await page.locator('#nav-home').click();
-    await page.locator('#nav-settings').click();
+    await irParaConfiguracoes(page);
     await expect(page.locator('#set-diarize')).not.toBeChecked();
 
     expect(errors).toEqual([]);
@@ -188,7 +201,7 @@ test.describe('configurações novas', () => {
 
   test('a seção do OBS só mostra os campos quando está ligada', async ({ page, errors }) => {
     await waitForHome(page);
-    await page.locator('#nav-settings').click();
+    await irParaConfiguracoes(page);
 
     const ligar = page.locator('#set-obs-enabled');
     await expect(ligar).toBeVisible();
@@ -198,15 +211,22 @@ test.describe('configurações novas', () => {
     await ligar.check();
     await expect(page.locator('#set-obs-conn')).toBeVisible();
     await expect(page.locator('#set-obs-port')).toHaveValue('4455');
-    // Sem OBS no ar, a tela diz o que fazer em vez de ficar calada.
-    await expect(page.locator('#set-obs-desc')).toContainText('WebSocket');
+
+    // Ligar dispara um teste de conexão contra o OBS da máquina. O resultado
+    // depende de ele estar aberto ou não — o que este teste afirma é que a
+    // tela responde nos dois casos: ou diz a versão que achou, ou diz o que
+    // falta ligar. O que não pode é continuar com o texto de instrução inicial,
+    // como se o clique não tivesse acontecido.
+    await expect(page.locator('#set-obs-desc')).toHaveText(
+      /OBS .* conectado|Não achei o OBS|procurando o OBS/,
+    );
 
     expect(errors).toEqual([]);
   });
 
   test('o modelo padrão é o mais fiel, não o mais rápido', async ({ page, errors }) => {
     await waitForHome(page);
-    await page.locator('#nav-settings').click();
+    await irParaConfiguracoes(page);
 
     const opcoes = page.locator('#set-model option');
     await expect(opcoes).not.toHaveCount(0);

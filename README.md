@@ -65,16 +65,16 @@ de novo depois de um erro continua de onde parou.
 **Windows**
 
 ```powershell
-git clone https://github.com/Alencar-png/meeting-processor.git
-cd meeting-processor
+git clone https://github.com/Alencar-png/Synapse.git
+cd Synapse
 .\install.ps1
 ```
 
 **macOS e Linux**
 
 ```bash
-git clone https://github.com/Alencar-png/meeting-processor.git
-cd meeting-processor
+git clone https://github.com/Alencar-png/Synapse.git
+cd Synapse
 ./install.sh
 ```
 

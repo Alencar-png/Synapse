@@ -1640,9 +1640,15 @@ function renderReader(text, termo) {
     const limpa = linha.trim();
     // O cabeçalho e os metadados do arquivo já aparecem no topo do painel.
     if (!limpa || limpa === '---' || limpa.startsWith('# ')) continue;
-    if (/^\*\*[^*]+:\*\*/.test(limpa)) continue;
+    // O colchete é o que distingue metadado de fala: a fala é
+    // `**[00:12] Você:**`, o metadado é `**Idioma:**`. Casar o metadado por
+    // "negrito com dois-pontos" descartava toda fala com falante marcado —
+    // que é o padrão — e o painel caía no despejo de markdown cru lá embaixo.
+    if (limpa.startsWith('**') && !limpa.startsWith('**[')) continue;
 
-    const fala = limpa.match(/^\*\*\[(\d{2}:\d{2}(?::\d{2})?)\]\*\*\s*(.*)$/);
+    // O falante é opcional: gravação mono não recebe marcação, e a mesma
+    // linha precisa ler bem nos dois casos.
+    const fala = limpa.match(/^\*\*\[(\d{2}:\d{2}(?::\d{2})?)\](?:\s*([^:*]+):)?\*\*\s*(.*)$/);
     const p = document.createElement('p');
     p.className = 'reader-line';
     if (fala) {
@@ -1650,7 +1656,13 @@ function renderReader(text, termo) {
       hora.className = 'reader-time';
       hora.textContent = fala[1];
       p.append(hora);
-      escrever(p, fala[2]);
+      if (fala[2]) {
+        const quem = document.createElement('span');
+        quem.className = 'reader-who';
+        quem.textContent = fala[2];
+        p.append(quem);
+      }
+      escrever(p, fala[3]);
     } else {
       escrever(p, limpa.replace(/\*\*/g, ''));
     }

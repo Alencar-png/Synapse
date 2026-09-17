@@ -1290,6 +1290,16 @@ input[type="search"]::-webkit-search-cancel-button { filter: invert(0.6); cursor
   font-variant-numeric: tabular-nums;
 }
 
+/* Quem falou, quando a gravação separou os lados. Fica junto do texto, e não
+   numa coluna como o horário: o nome tem largura variável, e alinhá-lo abriria
+   um vão diferente em cada linha. */
+.reader-who {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cyan);
+}
+
 .reader mark { background: var(--cyan-dim); color: var(--text); border-radius: 2px; }
 
 /* ===== Modais ===== */

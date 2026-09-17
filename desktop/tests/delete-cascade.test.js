@@ -75,3 +75,21 @@ test('excluir o projeto apaga vínculos, tarefas e histórico do chat', () => {
   const conn = db.open(out);
   assert.strictEqual(conn.prepare('SELECT COUNT(*) AS n FROM meetings').get().n, 0, 'nenhum vínculo órfão');
 });
+
+test('duas extrações no mesmo milissegundo não colidem no id da tarefa', () => {
+  // O id era cunhado pelo índice dentro da chamada (`t-<ms>-0`, `t-<ms>-1`),
+  // então uma segunda chamada no mesmo milissegundo recomeçava do zero e
+  // morria no UNIQUE. Duas reuniões processadas em sequência numa máquina
+  // rápida caem exatamente aí — e o CI, que é uma delas, pegou o caso.
+  const p = projects.saveProject(out, { name: 'Colisão' }).id;
+  for (let i = 0; i < 12; i += 1) {
+    const r = tasks.createFromExtraction(out, {
+      projectId: p, meetingId: `m-${i}`, items: [{ title: `T${i}a` }, { title: `T${i}b` }],
+    });
+    assert.strictEqual(r.created, 2, `a extração ${i} não criou as duas tarefas`);
+  }
+
+  const criadas = tasks.listTasks(out, p);
+  assert.strictEqual(criadas.length, 24);
+  assert.strictEqual(new Set(criadas.map((t) => t.id)).size, 24, 'houve id repetido');
+});

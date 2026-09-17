@@ -152,8 +152,12 @@ function createFromExtraction(dir, { projectId, meetingId, items }) {
     for (const item of items) {
       const campos = sanitize({ ...item, projectId, meetingId });
       if (!campos.title) continue;
+      // O id vem de `novoId`, que consulta o banco, e não do índice desta
+      // chamada: duas extrações no mesmo milissegundo cunhariam `t-<ms>-0`
+      // duas vezes e a segunda morreria no UNIQUE. Dentro da transação, cada
+      // consulta já enxerga o que as linhas anteriores inseriram.
       ins.run(
-        `t-${agora.toString(36)}-${criadas}`, projectId, meetingId, campos.title,
+        novoId(conn), projectId, meetingId, campos.title,
         campos.description, campos.assignee, campos.priority, agora,
       );
       criadas += 1;

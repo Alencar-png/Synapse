@@ -11,6 +11,7 @@ import argparse
 import logging
 import sys
 import time
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TextIO
@@ -80,6 +81,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help="Nome da reuniao (vira o nome da pasta). Padrao: nome do arquivo",
     )
+    tr.add_argument(
+        "--recorded-at",
+        type=str,
+        default="",
+        help=(
+            "Data e hora em que a reuniao comecou, em ISO 8601 local "
+            "(ex.: 2026-09-16T14:30:00). Padrao: o que o proprio arquivo disser"
+        ),
+    )
     tr.add_argument("--model", type=str, default="", help="Modelo do Whisper (ex.: small)")
     tr.add_argument("--language", type=str, default="", help="Idioma do audio (ex.: pt)")
     tr.add_argument(
@@ -88,6 +98,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emite eventos de progresso em JSONL no stdout (para o app desktop)",
     )
     return parser
+
+
+def _recording_start(raw: str) -> datetime | None:
+    """Momento em que a gravacao comecou, informado por quem chamou.
+
+    O app passa este valor quando ele mesmo gravou a reuniao: ali a hora certa
+    e a do inicio da gravacao, e nao a que o arquivo carrega. O arquivo so
+    ganha data quando e fechado — no fim da reuniao —, e numa reuniao de uma
+    hora isso e uma hora de diferenca. Valor ilegivel nao derruba a
+    transcricao: cai no que o arquivo disser, como antes.
+    """
+    texto = (raw or "").strip()
+    if not texto:
+        return None
+    try:
+        return datetime.fromisoformat(texto)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "--recorded-at ignorado: %r nao e uma data ISO 8601", texto
+        )
+        return None
 
 
 def _run_transcribe(args: argparse.Namespace, config: Settings) -> int:
@@ -138,11 +169,18 @@ def _run_transcribe(args: argparse.Namespace, config: Settings) -> int:
         # Data da gravação vem do próprio vídeo — é quando a reunião aconteceu,
         # não quando ela foi transcrita.
         media = probe_media(video_path)
+        # O inicio informado manda: quem gravou sabe a hora melhor do que o
+        # arquivo, que so e datado quando a reuniao ja acabou.
+        inicio = _recording_start(getattr(args, "recorded_at", ""))
+        recorded_at = inicio or media.recorded_at
+        date_source = (
+            "gravacao" if inicio else ("arquivo" if media.date_from_filesystem else "video")
+        )
         events.stage(
             "audio",
             "Extraindo audio",
             0,
-            f"Gravado em {media.recorded_at.strftime('%d/%m/%Y %H:%M')}",
+            f"Gravado em {recorded_at.strftime('%d/%m/%Y %H:%M')}",
         )
         logger.info("Extraindo audio de %s...", video_path.name)
         audio_path = extract_audio(video_path, config)
@@ -170,9 +208,9 @@ def _run_transcribe(args: argparse.Namespace, config: Settings) -> int:
             formats,
             name=args.name,
             metadata={
-                "recorded_at": to_utc_iso(media.recorded_at),
-                "recorded_at_local": media.recorded_at,
-                "date_source": "arquivo" if media.date_from_filesystem else "video",
+                "recorded_at": to_utc_iso(recorded_at),
+                "recorded_at_local": recorded_at,
+                "date_source": date_source,
                 "video_duration_seconds": round(media.duration, 2),
                 "model": model_label,
             },

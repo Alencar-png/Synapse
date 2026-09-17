@@ -101,13 +101,21 @@ function nativeStatus(projectRoot) {
   };
 }
 
-/** Argumentos do Python para transcrever no host. */
-function buildNativeArgs({ videoPath, outputDir, formats, name = '' }) {
+/**
+ * Argumentos do Python para transcrever no host.
+ *
+ * `recordedAt` é o início da gravação em ISO local, e só existe quando foi o
+ * app que gravou: o arquivo de vídeo só ganha data quando é fechado, no fim da
+ * reunião, e numa reunião longa a diferença é de horas. Vazio deixa o pipeline
+ * descobrir a data pelo próprio arquivo, como na importação.
+ */
+function buildNativeArgs({ videoPath, outputDir, formats, name = '', recordedAt = '' }) {
   return [
     '-m', 'meeting_processor', 'transcribe', videoPath,
     '--output-dir', outputDir,
     '--formats', formats.join(','),
     ...(name ? ['--name', name] : []),
+    ...(recordedAt ? ['--recorded-at', recordedAt] : []),
     '--json',
   ];
 }

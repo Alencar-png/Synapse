@@ -19,18 +19,6 @@ const { readPrompt } = require('./prompts-store');
 // Sufixo do PDF da reunião: "<nome> - Documento.pdf".
 const DOCUMENT_SUFFIX = 'Documento';
 
-// Navegadores capazes de imprimir HTML em PDF, na ordem de preferência.
-const BROWSERS = [
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-];
-
-function findBrowser() {
-  return BROWSERS.find((b) => fs.existsSync(b)) || null;
-}
-
 /**
  * Onde o Claude Code costuma estar instalado, na ordem de preferência.
  *
@@ -165,6 +153,5 @@ module.exports = {
   buildClaudeArgs,
   describeEvent,
   documentPdfPath,
-  findBrowser,
   findClaude,
 };

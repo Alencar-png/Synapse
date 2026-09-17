@@ -115,3 +115,20 @@ def test_safe_stem_preserva_ponto_que_nao_e_extensao():
 def test_safe_stem_ainda_remove_extensao_de_midia():
     assert safe_stem("Gravacao de Tela as 10.18.33.mov") == "Gravacao de Tela as 10.18.33"
     assert safe_stem("reuniao.MKV") == "reuniao"
+
+
+def test_recording_start_le_iso_local_e_ignora_lixo():
+    """O app informa quando a gravação começou; o que não for data é ignorado.
+
+    Uma data ilegível não pode derrubar a transcrição: o pipeline volta a ler
+    a data do próprio arquivo, que é o comportamento de sempre.
+    """
+    from datetime import datetime
+
+    from meeting_processor.__main__ import _recording_start
+
+    assert _recording_start("2026-09-16T14:30:00") == datetime(2026, 9, 16, 14, 30)
+    assert _recording_start("  2026-09-16T14:30:00  ") == datetime(2026, 9, 16, 14, 30)
+    assert _recording_start("") is None
+    assert _recording_start("ontem de tarde") is None
+    assert _recording_start(None) is None

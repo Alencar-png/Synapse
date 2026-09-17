@@ -129,7 +129,7 @@
   const clearJob = () => { jobTimers.forEach(clearTimeout); jobTimers = []; };
 
   /** Pipeline simulado: áudio → transcrição → export → extração (resumo + tasks). */
-  function runPipeline({ name, projectId, source }) {
+  function runPipeline({ name, projectId, source, recordedAt = 0, autoName = false }) {
     clearJob();
     const stages = [
       ...Array.from({ length: 3 }, (_, i) => ({ at: 250 + i * 300, key: 'audio', progress: (i + 1) * 33.4 })),
@@ -143,8 +143,10 @@
     }
     jobTimers.push(setTimeout(() => {
       const meeting = {
-        id: nid('m'), projectId: projectId || '', name,
-        recordedAt: Date.now(), duration: 1934, segments: 118,
+        id: nid('m'), projectId: projectId || '',
+        // Sem nome escrito na tela de gravação, a análise batiza a reunião.
+        name: autoName ? 'Onboarding — ajustes no e-mail de confirmação' : name,
+        recordedAt: recordedAt || Date.now(), duration: 1934, segments: 118,
         model: 'large-v3-turbo', language: settings.language, source,
         hasDocumento: true, transcript: T,
         concepts: ['Onboarding'],
@@ -161,7 +163,13 @@
       // O documento, se ligado em Configurações, vem em seguida; a janela espera.
       const docs = ['documento'].filter((k) => settings.steps[k]);
       meeting.hasDocumento = false;
-      emit('job:event', { event: 'done', meetingId: meeting.id, tasksCreated: created.length, docs });
+      emit('job:event', {
+        event: 'done',
+        meetingId: meeting.id,
+        tasksCreated: created.length,
+        renamedTo: autoName ? meeting.name : '',
+        docs,
+      });
       if (docs.length) jobTimers.push(setTimeout(() => window.api.generateDoc({ meetingId: meeting.id, kinds: docs }), 900));
     }, 6600));
     return { started: true };
@@ -183,6 +191,8 @@
           { id: 'medium', path: 'models/ggml-medium.bin', sizeMB: 1533 },
         ] },
         docker: { ok: false, docker: true, version: '27.1', message: 'Imagem não construída (demonstração).' },
+        platform: 'win32',
+        systemAudio: true,
       };
     },
     async pickOutputDir() { return null; },
@@ -254,6 +264,14 @@
       m.name = nome;
       return { ok: true, id };
     },
+    async renameMeetingWithAi(id) {
+      const m = meetings.find((x) => x.id === id);
+      if (!m) return { ok: false, message: 'Reunião não encontrada.' };
+      // A demonstração não chama o Claude: a espera é o que ela imita.
+      await new Promise((r) => setTimeout(r, 1200));
+      m.name = 'Onboarding — ajustes no e-mail de confirmação';
+      return { ok: true, id, name: m.name };
+    },
     async deleteMeeting(id) {
       meetings = meetings.filter((x) => x.id !== id);
       tasks.forEach((t) => { if (t.meetingId === id) t.meetingId = ''; });
@@ -301,8 +319,10 @@
     async startJob({ videoPath, name, projectId }) {
       return runPipeline({ name, projectId, source: videoPath.split(/[\\/]/).pop() });
     },
-    async processRecording({ projectId, name, duration }) {
-      return runPipeline({ name, projectId, source: `gravacao-${Math.round(duration)}s.wav`, duration });
+    async processRecording({ projectId, name, duration, autoName, recordedAt }) {
+      return runPipeline({
+        name, projectId, autoName, recordedAt, source: `gravacao-${Math.round(duration)}s.wav`, duration,
+      });
     },
     async cancelJob() {
       clearJob();

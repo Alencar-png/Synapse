@@ -32,7 +32,6 @@ const {
   buildClaudeArgs,
   describeEvent,
   documentPdfPath,
-  findBrowser,
   findClaude,
 } = require('./claude-jobs');
 const { analysisPath, normalizeAnalysis, readAnalysis, writeAnalysis } = require('./analysis');
@@ -227,6 +226,11 @@ async function enginesStatus() {
     chosen: settings.engine,
     native: { ...native, label: 'GPU (whisper.cpp)' },
     docker: { ...docker, ok: dockerOk, label: 'Docker (CPU)' },
+    platform: process.platform,
+    // Capturar o áudio que sai pelos alto-falantes é o que traz o outro lado
+    // de uma chamada, e no Electron isso só existe no Windows. Fora dele a
+    // janela ainda grava, mas só o microfone — e é o OBS que fecha a lacuna.
+    systemAudio: process.platform === 'win32',
   };
 }
 
@@ -288,6 +292,21 @@ function send(channel, payload) {
 
 // --- Transcrição ------------------------------------------------------------
 
+/**
+ * Timestamp do renderer em ISO 8601 **local**, do jeito que o pipeline lê.
+ *
+ * Sem o `Z` e sem fuso de propósito: o `meeting.json` guarda a data local, e é
+ * ela que a janela mostra. `toISOString()` daria UTC, e a reunião apareceria
+ * três horas fora do lugar.
+ */
+function localIso(ms) {
+  const data = new Date(Number(ms) || 0);
+  if (!ms || Number.isNaN(data.getTime())) return '';
+  const dois = (n) => String(n).padStart(2, '0');
+  return `${data.getFullYear()}-${dois(data.getMonth() + 1)}-${dois(data.getDate())}`
+    + `T${dois(data.getHours())}:${dois(data.getMinutes())}:${dois(data.getSeconds())}`;
+}
+
 function startJob(payload) {
   if (currentJob) {
     return { started: false, message: 'Já existe uma transcrição em andamento.' };
@@ -317,6 +336,9 @@ function startJob(payload) {
   const formats = payload.formats || settings.formats;
   const engine = payload.engine || settings.engine;
   const name = (payload.name || '').trim();
+  // Só a gravação feita pelo app sabe a hora em que a reunião começou; um
+  // vídeo importado não traz esse dado, e aí o pipeline lê o próprio arquivo.
+  const recordedAt = localIso(payload.recordedAt);
 
   let child;
   let containerName = null;
@@ -329,7 +351,7 @@ function startJob(payload) {
     }
     child = spawn(
       native.python,
-      buildNativeArgs({ videoPath, outputDir, formats, name }),
+      buildNativeArgs({ videoPath, outputDir, formats, name, recordedAt }),
       {
         cwd: PROJECT_ROOT,
         windowsHide: true,
@@ -353,6 +375,7 @@ function startJob(payload) {
         formats,
         containerName,
         name,
+        recordedAt,
       }),
       { windowsHide: true },
     );
@@ -500,6 +523,64 @@ function renameMeetingEverywhere(dir, id, novoNome) {
     tasks.renameMeeting(dir, id, result.id);
   }
   return result;
+}
+
+/**
+ * O título da análise virando nome de pasta.
+ *
+ * O prompt já pede um título sem `< > : " / \ | ? *`, mas o modelo escorrega — e
+ * um dois-pontos num título é o escorregão natural ("Onboarding: ajustes"). Sem
+ * esta troca, o nome seria recusado pela validação e a reunião ficaria com o
+ * nome provisório, ou o botão devolveria um erro que quem clicou não tem como
+ * consertar. É a mesma substituição que o exportador faz do lado do Python.
+ */
+function tituloParaNome(title) {
+  return (title || '').replace(/[<>:"/\\|?*]/g, '-').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Deixa a IA nomear uma reunião que já existe.
+ *
+ * É o mesmo título que sai sozinho ao fim de uma gravação sem nome — aqui
+ * pedido à mão, para a reunião que foi importada com o nome do arquivo ou
+ * batizada às pressas. Quando a análise já está no disco, o título já está
+ * lá dentro e nada precisa ser lido de novo; senão, o Claude lê a transcrição
+ * agora e a análise fica guardada, aproveitada depois pelo documento.
+ */
+async function renameMeetingWithAi(dir, id) {
+  if (isBusy()) {
+    return { ok: false, message: 'Espere o processamento em andamento terminar.' };
+  }
+
+  const meeting = library.getMeeting(dir, id);
+  if (!meeting) return { ok: false, message: 'Reunião não encontrada.' };
+  if (!meeting.transcript) {
+    return { ok: false, message: 'Esta reunião não tem transcrição para a IA ler.' };
+  }
+
+  const savePath = analysisPath(meeting.dir, meeting.legacy);
+  let analysis = readAnalysis(savePath);
+
+  if (!analysis?.title) {
+    const r = await analyzeMeeting({
+      transcriptPath: meeting.transcript,
+      context: meeting.project?.context || '',
+      savePath,
+      register: (child) => { currentExtraction = { child, meetingId: id }; },
+      onProgress: ({ detail }) => send('job:log', `Nome pela IA: ${detail}`),
+    });
+    currentExtraction = null;
+    analysis = r.analysis;
+    if (r.message) return { ok: false, message: `A IA não conseguiu ler a reunião: ${r.message}` };
+  }
+
+  if (!analysis?.title) {
+    return { ok: false, message: 'A IA não sugeriu um nome para esta reunião.' };
+  }
+
+  const nome = tituloParaNome(analysis.title);
+  const resultado = renameMeetingEverywhere(dir, id, nome);
+  return resultado.ok ? { ...resultado, name: nome } : resultado;
 }
 
 /** A pasta da reunião vai para a Lixeira, não para o vazio: um clique errado dá para desfazer. */
@@ -659,7 +740,9 @@ async function finishJob(event, outputDir, projectId, autoName = false) {
     }
 
     if (autoName && analysis?.title) {
-      const renomeada = renameMeetingEverywhere(outputDir, event.meetingId, analysis.title);
+      const renomeada = renameMeetingEverywhere(
+        outputDir, event.meetingId, tituloParaNome(analysis.title),
+      );
       if (renomeada.ok && renomeada.id) {
         event.meetingId = renomeada.id;
         event.renamedTo = renomeada.id;
@@ -843,8 +926,15 @@ function analyzeMeeting({ transcriptPath, context, savePath, register = () => {}
  * Gravação feita dentro do app (REC-04): o áudio capturado na janela chega
  * como bytes, vira um arquivo e entra no mesmo pipeline da importação. A
  * origem muda; o processamento é o de sempre.
+ *
+ * `autoName` chega ligado quando ninguém escreveu um nome na tela de gravação:
+ * o nome provisório serve só para a barra de progresso ter o que mostrar, e a
+ * análise o substitui pelo título que leu da conversa. `recordedAt` é o
+ * instante em que o botão de gravar foi apertado.
  */
-function startRecordingJob({ projectId, name, audio, mimeType = 'audio/webm' }) {
+function startRecordingJob({
+  projectId, name, audio, mimeType = 'audio/webm', autoName = false, recordedAt = 0,
+}) {
   if (currentJob) {
     return { started: false, message: 'Já existe uma transcrição em andamento.' };
   }
@@ -869,6 +959,8 @@ function startRecordingJob({ projectId, name, audio, mimeType = 'audio/webm' }) 
     videoPath: temporario,
     name: name || 'Gravação',
     projectId,
+    autoName,
+    recordedAt,
     cleanup: temporario,
   });
 }
@@ -899,27 +991,47 @@ async function cancelJob() {
 // --- Documento da reunião ----------------------------------------------------
 
 /**
- * Imprime o HTML em PDF pelo navegador. O veredito é o arquivo no disco: um
- * código de saída zero com PDF vazio não conta.
+ * Imprime o HTML em PDF pelo próprio Electron.
+ *
+ * O Chromium que desenha esta janela é o mesmo que o Edge usaria: não há
+ * motivo para procurar um navegador instalado, e procurar custava caro — os
+ * caminhos eram `C:\Program Files\...`, então fora do Windows o documento
+ * simplesmente não saía, e dentro dele quebrava em quem não tem Edge nem
+ * Chrome. Uma janela escondida carrega o HTML, imprime e morre.
+ *
+ * `preferCSSPageSize` respeita o `@page { size: A4; margin: 2cm }` que o
+ * documento declara, em vez de reimprimir tudo em Letter.
+ *
+ * O veredito é o arquivo no disco: uma promessa resolvida com PDF vazio não
+ * conta.
  */
 async function printToPdf(html, pdfPath) {
-  const browser = findBrowser();
-  if (!browser) {
-    return { ok: false, message: 'Nenhum navegador encontrado para gerar o PDF (Edge ou Chrome).' };
-  }
   const htmlTmp = path.join(app.getPath('temp'), `synapse-documento-${Date.now()}.html`);
   fs.writeFileSync(htmlTmp, html, 'utf-8');
+
+  // Sem preload, sem Node e sem janela visível: esta só renderiza o HTML que
+  // o próprio app acabou de montar.
+  const impressora = new BrowserWindow({
+    show: false,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+
   try {
     unlinkTolerant(pdfPath);   // um PDF antigo não pode passar por resultado novo
-    const r = await run(browser, [
-      '--headless', '--disable-gpu', '--no-pdf-header-footer',
-      `--print-to-pdf=${pdfPath}`, htmlTmp,
-    ]);
+    await impressora.loadFile(htmlTmp);
+    const pdf = await impressora.webContents.printToPDF({
+      pageSize: 'A4',
+      preferCSSPageSize: true,
+      printBackground: true,
+    });
+    fs.writeFileSync(pdfPath, pdf);
+
     const ok = fs.existsSync(pdfPath) && fs.statSync(pdfPath).size > 0;
-    return ok
-      ? { ok: true }
-      : { ok: false, message: `O navegador não gerou o PDF (código ${r.code}). ${r.stderr}`.trim() };
+    return ok ? { ok: true } : { ok: false, message: 'O PDF saiu vazio.' };
+  } catch (err) {
+    return { ok: false, message: `Não foi possível gerar o PDF: ${err.message}` };
   } finally {
+    impressora.destroy();
     try { fs.unlinkSync(htmlTmp); } catch { /* já removido */ }
   }
 }
@@ -1074,6 +1186,7 @@ ipcMain.handle('meetings:list', (_e, projectId) => workspace.listMeetings(outDir
 ipcMain.handle('meetings:get', (_e, id) => workspace.getMeeting(outDir(), id));
 ipcMain.handle('meetings:rename', (_e, { id, name }) =>
   renameMeetingEverywhere(outDir(), id, name));
+ipcMain.handle('meetings:renameWithAi', (_e, { id }) => renameMeetingWithAi(outDir(), id));
 ipcMain.handle('meetings:delete', (_e, { id, files }) => deleteMeetingEverywhere(outDir(), id, files));
 ipcMain.handle('meetings:assign', (_e, { meetingId, projectId }) =>
   projects.assignMeeting(outDir(), meetingId, projectId));
@@ -1105,8 +1218,8 @@ ipcMain.handle('obs:pause', (_e, { resume = false } = {}) =>
  * Sem `cleanup`: o arquivo é do OBS, está na pasta de vídeos de quem gravou, e
  * apagá-lo depois de transcrever seria apagar material que não é nosso.
  */
-ipcMain.handle('obs:process', (_e, { videoPath, name, projectId }) =>
-  startJob({ videoPath, name, projectId }));
+ipcMain.handle('obs:process', (_e, { videoPath, name, projectId, autoName, recordedAt }) =>
+  startJob({ videoPath, name, projectId, autoName, recordedAt }));
 ipcMain.handle('transcript:import', (_e, payload) => importTranscriptJob(payload));
 
 // Documentos: o front manda o id da reunião; aqui viram caminho e contexto.

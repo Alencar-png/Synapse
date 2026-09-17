@@ -15,9 +15,12 @@ const MODELS_VOLUME = 'meeting-processor-models';
  *
  * A pasta do vídeo entra somente-leitura em /input e a de saída em /output;
  * o volume de modelos persiste o download do Whisper entre execuções.
+ *
+ * `recordedAt` é o início da gravação em ISO local, e só existe quando foi o
+ * app que gravou — o arquivo só é datado ao ser fechado, no fim da reunião.
  */
 function buildDockerArgs({
-  videoPath, outputDir, model, language, formats, containerName, name = '',
+  videoPath, outputDir, model, language, formats, containerName, name = '', recordedAt = '',
 }) {
   return [
     'run', '--rm', '--name', containerName,
@@ -31,6 +34,7 @@ function buildDockerArgs({
     '--output-dir', '/output',
     '--formats', formats.join(','),
     ...(name ? ['--name', name] : []),
+    ...(recordedAt ? ['--recorded-at', recordedAt] : []),
     '--json',
   ];
 }

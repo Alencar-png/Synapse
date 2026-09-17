@@ -1686,6 +1686,35 @@ $('drawer-rename').addEventListener('click', () => {
   input.addEventListener('blur', done);
 });
 
+/**
+ * Deixa a IA nomear a reunião aberta.
+ *
+ * Quando a análise já existe, o título vem dela e a troca é imediata; quando
+ * não, o Claude precisa ler a transcrição inteira, e isso leva. O botão conta
+ * o que está acontecendo em vez de ficar parado: sem isso, a espera parece o
+ * clique não ter funcionado, e a segunda tentativa esbarra no processamento
+ * que a primeira começou.
+ */
+$('drawer-rename-ai').addEventListener('click', async () => {
+  if (busyWarning()) return;
+  const botao = $('drawer-rename-ai');
+  const rotulo = botao.textContent;
+  botao.disabled = true;
+  botao.textContent = '✨ Lendo a reunião…';
+  $('drawer-error').textContent = '';
+
+  try {
+    const r = await window.api.renameMeetingWithAi(drawerMeetingId);
+    if (!r.ok) { $('drawer-error').textContent = r.message; return; }
+    await refreshAll();
+    await openDrawer(r.id);
+    toast(`Reunião renomeada para <strong>${r.name}</strong>.`);
+  } finally {
+    botao.disabled = false;
+    botao.textContent = rotulo;
+  }
+});
+
 $('drawer-delete').addEventListener('click', async () => {
   const ok = await confirmDanger({
     title: 'Excluir esta reunião?',
@@ -2082,6 +2111,15 @@ async function startRecording(preferido = '') {
     return;
   }
 
+  // Fora do Windows o Electron não captura o áudio que sai pelos alto-falantes,
+  // então a janela grava só o microfone: metade da chamada. Dizer isso antes é
+  // o que evita descobrir a perda depois de uma reunião inteira gravada.
+  if (engines?.systemAudio === false) {
+    toast('Neste sistema o app grava <strong>só o microfone</strong> — o áudio da chamada '
+      + 'não é capturado. Para gravar os dois lados, ligue o <strong>OBS Studio</strong> '
+      + 'em Configurações.');
+  }
+
   const captura = await captureAudio();
   if (!captura) {
     toast('Nenhuma fonte de áudio disponível. Libere o microfone e tente de novo.');
@@ -2120,6 +2158,10 @@ function openRecordingOverlay(preferido, fonte) {
     select.append(opt);
   }
   select.value = preferido || '';
+
+  // Em branco de propósito: quem souber o nome da reunião escreve agora, e
+  // quem não souber deixa a IA nomear pelo que foi dito.
+  $('record-name').value = '';
 
   $('record-clock').textContent = '00:00';
   $('record-fonte').textContent = fonte;
@@ -2175,9 +2217,33 @@ $('record-cancel').addEventListener('click', async () => {
 const nomeDaGravacao = () =>
   `Reunião ${fmtDate(Date.now())} ${new Date().getHours()}h${pad(new Date().getMinutes())}`;
 
+/**
+ * O nome escolhido na tela de gravação, e o que fazer quando não houver um.
+ *
+ * Em branco não é falta de nome: é o pedido para a IA nomear. A reunião ainda
+ * precisa de um nome de pasta enquanto é transcrita — daí o provisório com a
+ * data —, e o título que a análise ler substitui esse nome no fim.
+ *
+ * O caractere proibido é recusado aqui, e não lá na frente: o nome vira o nome
+ * de uma pasta no disco, e a gravação já terminou quando a resposta chegaria.
+ */
+function nomeEscolhido() {
+  const digitado = $('record-name').value.trim();
+  if (!digitado) return { name: nomeDaGravacao(), autoName: true };
+  if (/[<>:"/\\|?*]/.test(digitado)) {
+    toast('O nome não pode conter < > : " / \\ | ? * — usei a data e a hora.');
+    return { name: nomeDaGravacao(), autoName: false };
+  }
+  return { name: digitado, autoName: false };
+}
+
 $('record-stop').addEventListener('click', async () => {
   const duration = (Date.now() - recStartedAt) / 1000;
   const projectId = $('record-project').value;
+  // A hora em que a reunião começou, não a de agora: o arquivo de vídeo só é
+  // datado quando é fechado, e numa reunião de uma hora isso erra por uma hora.
+  const recordedAt = recStartedAt;
+  const { name, autoName } = nomeEscolhido();
   stopRecordingUI();
 
   if (obsRecording) {
@@ -2186,9 +2252,10 @@ $('record-stop').addEventListener('click', async () => {
     if (!parada.ok) { toast(`O OBS não parou a gravação: ${parada.message}`); return; }
     if (!parada.outputPath) { toast('O OBS parou, mas não disse onde gravou o arquivo.'); return; }
 
-    const name = nomeDaGravacao();
     startProcessing(name, projectId);
-    const result = await window.api.obsProcess({ videoPath: parada.outputPath, name, projectId });
+    const result = await window.api.obsProcess({
+      videoPath: parada.outputPath, name, projectId, autoName, recordedAt,
+    });
     if (result && result.started === false) {
       stopProcessing();
       toast(`Não deu para processar: ${result.message}`);
@@ -2199,12 +2266,13 @@ $('record-stop').addEventListener('click', async () => {
   const blob = await finishRecording();
   if (!blob) { toast('A gravação saiu vazia.'); return; }
 
-  const name = nomeDaGravacao();
   startProcessing(name, projectId);
 
   const result = await window.api.processRecording({
     projectId,
     name,
+    autoName,
+    recordedAt,
     duration,
     audio: await blob.arrayBuffer(),
     mimeType: blob.type,

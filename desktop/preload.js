@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('api', {
   listMeetings: (projectId) => ipcRenderer.invoke('meetings:list', projectId),
   getMeeting: (id) => ipcRenderer.invoke('meetings:get', id),
   renameMeeting: (id, name) => ipcRenderer.invoke('meetings:rename', { id, name }),
+  renameMeetingWithAi: (id) => ipcRenderer.invoke('meetings:renameWithAi', { id }),
   deleteMeeting: (id, files) => ipcRenderer.invoke('meetings:delete', { id, files }),
   assignProject: (meetingId, projectId) =>
     ipcRenderer.invoke('meetings:assign', { meetingId, projectId }),

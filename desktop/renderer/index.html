@@ -437,6 +437,8 @@
       <div class="drawer-actions">
         <button class="btn ghost" id="drawer-docs" type="button" hidden>Gerar documentos</button>
         <button class="btn ghost" id="drawer-rename" type="button">Renomear</button>
+        <button class="btn ghost" id="drawer-rename-ai" type="button"
+                title="A IA lê a reunião e sugere o nome">✨ Renomear com IA</button>
         <button class="btn ghost danger" id="drawer-delete" type="button">Excluir</button>
       </div>
       <p class="err" id="drawer-error"></p>
@@ -629,6 +631,11 @@
       <label class="overlay-field">
         <span class="sr-only">Projeto da gravação</span>
         <select class="input" id="record-project"></select>
+      </label>
+      <label class="overlay-field">
+        <span class="sr-only">Nome da reunião</span>
+        <input class="input" id="record-name" type="text" autocomplete="off"
+               placeholder="Nome da reunião — em branco, a IA nomeia">
       </label>
       <h1 class="overlay-title">Gravando reunião</h1>
       <p class="overlay-clock" id="record-clock">00:00</p>

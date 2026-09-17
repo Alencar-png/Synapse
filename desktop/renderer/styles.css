@@ -1432,6 +1432,10 @@ input[type="search"]::-webkit-search-cancel-button { filter: invert(0.6); cursor
 .overlay-field { display: block; }
 .overlay-field .input { min-width: 220px; text-align: center; }
 
+/* O nome da reunião é uma frase, não uma escolha de lista: precisa de largura
+   para o texto caber e para a dica sobre a IA ser lida inteira. */
+#record-name { min-width: min(420px, 78vw); }
+
 .sr-only {
   position: absolute;
   width: 1px;

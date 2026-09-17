@@ -14,8 +14,8 @@ const path = require('node:path');
 const { after, before, test } = require('node:test');
 
 const {
-  buildNativeEnv, explainNativeFailure, listNativeModels, missingModule, modelRank,
-  nativeStatus,
+  buildNativeArgs, buildNativeEnv, explainNativeFailure, listNativeModels, missingModule,
+  modelRank, nativeStatus,
 } = require('../engines');
 
 let tmp;
@@ -105,4 +105,17 @@ test('buildNativeEnv leva o pedido de marcar quem fala ao motor', () => {
   assert.strictEqual(buildNativeEnv({ ...base, diarize: false }).MEETING_WHISPER_DIARIZE, '0');
   // Sem dizer nada, não marca: a opção é uma escolha, não um efeito colateral.
   assert.strictEqual(buildNativeEnv(base).MEETING_WHISPER_DIARIZE, '0');
+});
+
+test('buildNativeArgs só passa --recorded-at quando o app sabe a hora do início', () => {
+  // Na importação de um vídeo ninguém sabe quando a reunião começou: a
+  // bandeira fica de fora e o pipeline lê a data do próprio arquivo.
+  const base = { videoPath: 'C:\v\call.mkv', outputDir: 'C:\out', formats: ['md'] };
+  assert.ok(!buildNativeArgs(base).includes('--recorded-at'));
+
+  const args = buildNativeArgs({ ...base, name: 'Daily', recordedAt: '2026-09-16T14:30:00' });
+  assert.deepStrictEqual(
+    args.slice(-5),
+    ['--name', 'Daily', '--recorded-at', '2026-09-16T14:30:00', '--json'],
+  );
 });

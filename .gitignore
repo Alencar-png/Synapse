@@ -54,3 +54,24 @@ desktop/test-results/
 desktop/playwright-report/
 # Variáveis de ambiente locais do launcher (ex.: CLAUDE_CONFIG_DIR)
 .synapse-env
+
+# Atalho criado pelo install.sh — aponta para esta máquina.
+/synapse
+
+# Environment & Secrets (AIOX)
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# Dependencies (AIOX)
+node_modules
+
+# Build & Logs (AIOX)
+dist/
+build/
+logs/
+
+# AIOX Local (AIOX)
+.aiox-core/local/
+.aiox/install-log.txt

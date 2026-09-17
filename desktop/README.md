@@ -97,6 +97,8 @@ mensagem. Os cenários:
 | `04-prompts` | abrir, salvar sem recarregar a página, personalizar, restaurar, recusar sem placeholders |
 | `05-chat` | pergunta e resposta, ferramenta em uso, falha do processo vira mensagem, histórico entre abas, Nova conversa, modo autônomo com confirmação |
 | `06-kanban` | colunas vazias, criar na coluna certa, recusar sem título, editar/mover/excluir |
+| `07-fluxo` | etapas próprias: criar, ordenar, desligar, excluir; marcar quem fala; seção do OBS |
+| `08-documento` | o PDF sai pelo próprio Electron e o arquivo no disco é um PDF de verdade |
 
 Falhou? `test-results/` guarda screenshot e trace (`npx playwright show-trace
 <arquivo>`); `playwright-report/` tem o relatório em HTML.
@@ -107,6 +109,17 @@ Falhou? `test-results/` guarda screenshot e trace (`npx playwright show-trace
 
 Dentro de um projeto, **Iniciar reunião** grava microfone **e** áudio do
 sistema (loopback) — numa chamada online o microfone traz apenas o seu lado.
+
+A tela de gravação tem o projeto **e o nome da reunião**, editáveis enquanto a
+reunião corre: dá para batizá-la no começo, na metade ou só na hora de
+finalizar. Deixar o nome em branco não é esquecimento — é o pedido para a IA
+nomear: a reunião nasce com um nome provisório (data e hora) só para a pasta
+existir enquanto é transcrita, e o título que a análise lê da conversa toma o
+lugar dele no fim, levando junto os vínculos com o projeto e as tarefas. O
+**instante em que a gravação começou** vai para o `meeting.json`
+(`--recorded-at` do pipeline): o arquivo de vídeo só ganha data quando é
+fechado, no fim da reunião, e numa reunião de uma hora isso erraria por uma
+hora.
 As duas fontes não são mixadas: o microfone vai para o **canal esquerdo** e o
 som do sistema para o **direito**. É dessa separação que sai o "quem falou" na
 transcrição (`--diarize` do whisper.cpp); somadas num canal só, as vozes ficam
@@ -147,14 +160,21 @@ Dessa análise saem as duas coisas, por construção iguais:
   ligado à reunião. O painel da reunião lista essas tarefas e abre o card. Sem
   projeto, a etapa é pulada: tarefa sem projeto não teria onde viver.
 - **Documento em PDF** — o app monta o HTML a partir da análise
-  (`document-html.js`) e o imprime pelo Edge ou Chrome. A tabela de tarefas do
-  PDF é a mesma lista dos cards.
+  (`document-html.js`) e imprime em PDF pelo próprio Electron — o mesmo
+  Chromium que desenha a janela, sem depender de um navegador instalado. A
+  tabela de tarefas do PDF é a mesma lista dos cards.
 
 Cada uma liga e desliga em **Configurações → Depois da transcrição**
 (`pipeline-steps.js` decide o que roda; com as duas desligadas e sem nome
 automático, o Claude nem é chamado). O botão **Gerar documentos**, no painel da
 reunião, monta o PDF a partir da análise guardada — e, numa reunião de antes da
 análise existir, pede a análise primeiro.
+
+**Renomear com IA**, ao lado de **Renomear** no painel da reunião, usa o mesmo
+título — agora pedido à mão, para a reunião importada com o nome do arquivo ou
+batizada às pressas. Com a análise já no disco, o título já está lá dentro e a
+troca é imediata; sem ela, o Claude lê a transcrição agora e a análise fica
+guardada, aproveitada depois pelo documento.
 
 No mesmo cartão, **Prompts** lista as etapas num seletor (a lista vem de
 `prompts-store.js`: um prompt novo registrado ali aparece sozinho) e abre as
@@ -315,6 +335,6 @@ desktop/
 | "motor indisponível" | No modo GPU, confira `.whisper-cpp/whisper-cli.exe` e `.models/*.bin`. No Docker, abra o Docker Desktop e clique em **Verificar de novo**. |
 | Transcrição muito lenta | Confira o motor em Configurações: se está em **Docker**, é CPU. O detalhe da tela mostra `GPU: <placa>` quando a GPU entra em ação. |
 | Nenhuma tarefa foi criada | A reunião precisa estar num projeto e o `claude` precisa estar autenticado — rode `claude` uma vez no terminal. O log da janela traz o motivo. |
-| "O PDF não foi gerado" | Além do `claude`, é preciso ter Edge ou Chrome instalado. |
+| "O PDF não foi gerado" | O documento vem da análise: confira se o `claude` está instalado e autenticado. A impressão em si é do próprio app e não precisa de navegador. |
 | Gravação sem o áudio da outra pessoa | A tela de gravação diz a fonte em uso. Só microfone significa que o loopback do sistema foi negado. |
 | Arquivo não aceito | Só vídeo e áudio: mkv, mp4, mov, webm, avi, mp3, wav, m4a e afins. |

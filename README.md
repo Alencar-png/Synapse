@@ -56,74 +56,110 @@ lida em voz alta com uma voz neural (ou a do sistema, offline).
 
 ---
 
-## Abrir e rodar
+## Instalar
 
-### Passo 1 — Requisitos
+Um comando. O instalador confere o que já existe na máquina, busca o que falta
+— whisper.cpp, modelo, dependências — e deixa o app pronto para abrir. Rodar
+de novo depois de um erro continua de onde parou.
 
-| O quê | Para quê | Como instalar |
-|-------|----------|---------------|
-| **Node.js 20+** | abrir o app | `winget install OpenJS.NodeJS.LTS` |
-| **Python 3.11+** | motor de transcrição | <https://www.python.org/downloads/> (marque *Add to PATH*) |
-| **ffmpeg** | extrair o áudio | `winget install Gyan.FFmpeg` · `brew install ffmpeg` · `apt install ffmpeg` |
-| **Claude Code** | tarefas e documentos | <https://claude.com/claude-code> |
+**Windows**
 
-### Passo 2 — Instale as dependências do Python
+```powershell
+git clone https://github.com/Alencar-png/meeting-processor.git
+cd meeting-processor
+.\install.ps1
+```
+
+**macOS e Linux**
 
 ```bash
 git clone https://github.com/Alencar-png/meeting-processor.git
 cd meeting-processor
-python -m venv .venv
+./install.sh
 ```
+
+O padrão baixa o `large-v3-turbo` (1,6 GB), rápido e bom o bastante para a
+maioria das reuniões. Para o modelo mais fiel em português, `large-v3`
+(3,1 GB, cerca do dobro do tempo):
 
 ```powershell
-.venv\Scripts\Activate.ps1      # Windows
+.\install.ps1 -Model large-v3          # e -Gpu cuda, em placas NVIDIA
 ```
 ```bash
-source .venv/bin/activate       # macOS / Linux
+./install.sh --model large-v3
 ```
 
+O instalador **não mexe no sistema por conta própria**. Se faltar Node, Python
+ou ffmpeg, ele mostra o comando exato e para — daí é rodar o comando e chamá-lo
+de novo.
+
+| O quê | Para quê | Se faltar |
+|-------|----------|-----------|
+| **Node.js 20+** | abrir o app | `winget install OpenJS.NodeJS.LTS` · `brew install node` · `apt install nodejs` |
+| **Python 3.11+** | motor de transcrição | `winget install Python.Python.3.12` · `brew install python` · `apt install python3` |
+| **ffmpeg** | extrair o áudio | `winget install Gyan.FFmpeg` · `brew install ffmpeg` · `apt install ffmpeg` |
+| **Claude Code** | análise, tarefas e documentos | <https://claude.com/claude-code> |
+
+O Claude Code fica de fora do instalador de propósito: ele tem login próprio e
+o app roda sem ele — sem análise, sem cards e sem PDF, mas transcrevendo.
+
+### O que roda em cada sistema
+
+|  | Windows | macOS | Linux |
+|---|:---:|:---:|:---:|
+| Transcrição na GPU (whisper.cpp) | ✅ Vulkan/CUDA | ✅ Metal | ✅ CPU, GPU compilando |
+| Transcrição pelo Docker (CPU) | ✅ | ✅ | ✅ |
+| Gravar pelo **OBS Studio** | ✅ | ✅ | ✅ |
+| Gravar pela janela do app — microfone | ✅ | ✅ | ✅ |
+| Gravar pela janela do app — **áudio da chamada** | ✅ | ❌ | ❌ |
+| Análise, Kanban, documento em PDF | ✅ | ✅ | ✅ |
+| Chat do projeto, voz e leitura em voz alta | ✅ | ✅ | ✅ |
+
+A única lacuna real é a captura do **áudio que sai pelos alto-falantes**, que
+no Electron [só existe no Windows](https://www.electronjs.org/docs/latest/api/structures/streams).
+Fora dele, a janela grava apenas o microfone — metade de uma chamada — e o app
+avisa isso na hora de começar. **O OBS Studio fecha essa lacuna nos três
+sistemas**, e com vantagem: faixas separadas para microfone e sistema, sem
+vazamento de um lado no outro. Em macOS e Linux, é o caminho recomendado.
+
+### O que o instalador coloca no lugar
+
+Dois binários grandes, fora do repositório:
+
+- `whisper-cli` em **`.whisper-cpp/`** — no Windows e no Linux, o pacote pronto
+  da release `v1.9.2` do whisper.cpp; no macOS, o do Homebrew, que já vem com
+  Metal.
+- os modelos GGML em **`.models/`** — o de transcrição e o de **detecção de
+  voz** ([`ggml-silero-v5.1.2.bin`](https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin),
+  0,9 MB). Com o segundo, o Whisper só vê os trechos com fala e deixa de
+  inventar "Tchau." em série nos silêncios. Sem ele, uma limpeza posterior
+  remove repetições e frases-fantasma isoladas.
+
+Com os dois modelos em `.models/`, o app usa o mais fiel e deixa o outro no
+seletor ([outros modelos](https://huggingface.co/ggerganov/whisper.cpp)).
+Como compilar o whisper.cpp com Vulkan — o caminho de GPU em placas AMD e
+Intel — está em [`desktop/README.md`](desktop/README.md). Sem nada disso o app
+ainda roda pelo motor Docker, que dispensa GPU.
+
+Se preferir a transcrição em Python puro, que baixa o modelo sozinho mas é bem
+mais lenta: `.venv/bin/pip install -e ".[transcription]"`.
+
+## Abrir
+
+**Windows:** clique duas vezes em **`Meeting Processor (sem console).vbs`**. O
+**`Meeting Processor.bat`** faz o mesmo mostrando as mensagens — use quando
+algo der errado.
+
+**macOS e Linux:** o instalador deixa um atalho na raiz do projeto.
+
 ```bash
-pip install -e .
+./synapse
 ```
 
-Isso basta para o caminho rápido (whisper.cpp). Se preferir a transcrição em
-Python puro, que baixa o modelo sozinho mas é bem mais lenta:
-`pip install -e ".[transcription]"`.
-
-### Passo 3 — Coloque o whisper.cpp e um modelo
-
-O motor rápido precisa de dois arquivos, que não vão no repositório por serem
-binários grandes:
-
-- `whisper-cli` (ou `whisper-cli.exe`) em **`.whisper-cpp/`**
-- um modelo GGML `.bin` em **`.models/`** —
-  [`ggml-large-v3.bin`](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin)
-  (3,1 GB) é o padrão do app: o mais fiel em português.
-  `ggml-large-v3-turbo.bin` (1,6 GB) transcreve em cerca de metade do tempo e
-  erra mais em nomes, números e no fim das frases — se os dois estiverem em
-  `.models/`, o app usa o v3 e deixa o turbo no seletor
-  ([outros modelos](https://huggingface.co/ggerganov/whisper.cpp))
-- opcional, mas recomendado: o modelo de **detecção de voz**
-  [`ggml-silero-v5.1.2.bin`](https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin)
-  (0,9 MB), também em **`.models/`**. Com ele o Whisper só vê os trechos com
-  fala e deixa de inventar "Tchau." em série nos silêncios. Sem ele, uma
-  limpeza posterior remove repetições e frases-fantasma isoladas.
-
-Como compilar o whisper.cpp com Vulkan está em
-[`desktop/README.md`](desktop/README.md). Sem esses arquivos o app ainda roda
-pelo motor Docker, que dispensa GPU.
-
-### Passo 4 — Abra
-
-Clique duas vezes em **`Meeting Processor (sem console).vbs`**. Na primeira vez
-ele instala as dependências do app; depois abre direto. O
-**`Meeting Processor.bat`** faz o mesmo mostrando as mensagens — use quando algo
-der errado.
-
-Pela linha de comando:
+Em qualquer sistema, pela linha de comando:
 
 ```bash
-cd desktop && npm install && npm start
+cd desktop && npm start
 ```
 
 **Abrir junto com o Windows:** coloque um atalho do `.vbs` na pasta de
@@ -181,6 +217,10 @@ O app chama exatamente este comando. Ele também serve avulso:
 # Cria ./saida/<nome>/ com a transcrição (.md e .txt) e o meeting.json
 python -m meeting_processor transcribe reuniao.mkv --output-dir ./saida
 python -m meeting_processor transcribe reuniao.mkv --output-dir ./saida --name "Call com o cliente"
+
+# Quando você sabe a hora em que a reunião comecou — o app passa isto nas
+# gravações dele. Sem a bandeira, a data vem do próprio arquivo.
+python -m meeting_processor transcribe reuniao.mkv --recorded-at 2026-09-16T14:30:00
 ```
 
 Padrões em [`config.yaml`](config.yaml); qualquer um deles aceita override por
@@ -193,7 +233,8 @@ variável de ambiente (veja [`.env.example`](.env.example)).
 | Sintoma | O que fazer |
 |---------|-------------|
 | `ffmpeg não encontrado no PATH` | Instale o ffmpeg e reabra o terminal |
-| `Motor nativo indisponível` | Falta o `whisper-cli` em `.whisper-cpp/` ou o `.bin` em `.models/` |
+| `Motor nativo indisponível` | Falta o `whisper-cli` em `.whisper-cpp/` ou o `.bin` em `.models/` — rode o instalador de novo, ele busca só o que falta |
+| Gravação sem o áudio da outra pessoa | Fora do Windows a janela só capta o microfone. Use o OBS Studio (Configurações → Gravar pelo OBS) |
 | Transcrição lenta | Confira se a linha "GPU: ..." aparece no progresso; sem ela está na CPU |
 | "Tchau." (ou outra frase) repetida em série na transcrição | Alucinação do Whisper no silêncio. Coloque o `ggml-silero-v5.1.2.bin` em `.models/` (VAD); a limpeza já colapsa a repetição, mas o VAD evita que ela nasça |
 | Kanban vazio depois da reunião | O aviso na tela diz o motivo; o log completo está em `meeting_processor.log` |
@@ -250,6 +291,8 @@ mcp-obs/                   # servidor MCP do OBS Studio — veja mcp-obs/README.
 ├── obs-websocket.js       # cliente do obs-websocket v5 (sem dependências)
 └── recording.js           # começar, parar, pausar e ler o estado da gravação
 
+install.ps1                # instalação em um comando (Windows)
+install.sh                 # instalação em um comando (macOS e Linux)
 Dockerfile                 # imagem do motor CPU (whisper.cpp + ffmpeg)
 ```
 

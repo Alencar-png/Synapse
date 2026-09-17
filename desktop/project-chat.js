@@ -119,14 +119,25 @@ function buildChatArgs({ sessionId, resume, bypass, systemPromptFile, addDirs = 
   return args;
 }
 
+/**
+ * Só o nome do arquivo, venha o caminho em que separador vier.
+ *
+ * `path.basename` usa o separador da plataforma em que o app roda, e num Linux
+ * ele não reconhece a barra invertida: um caminho do Windows voltaria inteiro
+ * para a tela, no lugar do nome curto que a linha promete.
+ */
+function nomeDoArquivo(caminho) {
+  return String(caminho).split(/[/\\]/).filter(Boolean).pop() || '';
+}
+
 /** O que dizer na tela quando o Claude usa uma ferramenta. */
 function describeTool(name, input = {}) {
   const alvo = input.file_path || input.path || input.pattern || input.command || input.url || input.query || '';
   const curto = typeof alvo === 'string' && alvo.length > 90 ? `${alvo.slice(0, 87)}…` : alvo;
   switch (name) {
-    case 'Read': return `lendo ${path.basename(String(curto)) || 'arquivo'}`;
-    case 'Write': return `escrevendo ${path.basename(String(curto)) || 'arquivo'}`;
-    case 'Edit': return `editando ${path.basename(String(curto)) || 'arquivo'}`;
+    case 'Read': return `lendo ${nomeDoArquivo(curto) || 'arquivo'}`;
+    case 'Write': return `escrevendo ${nomeDoArquivo(curto) || 'arquivo'}`;
+    case 'Edit': return `editando ${nomeDoArquivo(curto) || 'arquivo'}`;
     case 'Glob': return `procurando ${curto}`;
     case 'Grep': return `buscando "${curto}"`;
     case 'Bash': return `executando: ${curto}`;

@@ -11,6 +11,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 
 const {
   ANALYSIS_STEP_ID,
@@ -185,18 +186,24 @@ test('a saída de uma etapa vira a entrada da seguinte', () => {
     }),
   ], { analysisPrompt: PROMPT_ANALISE });
 
+  // O separador é o da plataforma: montar a expectativa com o mesmo
+  // path.join que o código usa é o que faz este teste valer no Windows e no
+  // Linux — a suíte do CI roda em Ubuntu.
+  const dir = 'C:\\r\\Weekly';
+  const dentro = (nome) => path.join(dir, nome);
+
   const plano = planSteps(flow, {
-    meetingDir: 'C:\\r\\Weekly',
-    analysisPath: 'C:\\r\\Weekly\\analise.json',
-    transcriptPath: 'C:\\r\\Weekly\\Weekly.md',
+    meetingDir: dir,
+    analysisPath: dentro('analise.json'),
+    transcriptPath: dentro('Weekly.md'),
   });
 
   assert.equal(plano.length, 3);
-  assert.equal(plano[0].outputPath, 'C:\\r\\Weekly\\analise.json');
-  assert.equal(plano[1].outputPath, 'C:\\r\\Weekly\\resumo.md');
-  assert.equal(plano[2].outputPath, 'C:\\r\\Weekly\\resumo-en.md');
+  assert.equal(plano[0].outputPath, dentro('analise.json'));
+  assert.equal(plano[1].outputPath, dentro('resumo.md'));
+  assert.equal(plano[2].outputPath, dentro('resumo-en.md'));
   // A tradução recebe o caminho do resumo, não o da análise.
-  assert.match(plano[2].prompt, /Traduza C:\\r\\Weekly\\resumo\.md/);
+  assert.ok(plano[2].prompt.includes(`Traduza ${dentro('resumo.md')}`));
 });
 
 test('etapa sem saída não vira o "anterior" de ninguém', () => {
@@ -208,7 +215,8 @@ test('etapa sem saída não vira o "anterior" de ninguém', () => {
     }),
   ], { analysisPrompt: PROMPT_ANALISE });
 
-  const plano = planSteps(flow, { meetingDir: 'C:\\r\\W', analysisPath: 'C:\\r\\W\\analise.json' });
+  const dir = 'C:\\r\\W';
+  const plano = planSteps(flow, { meetingDir: dir, analysisPath: path.join(dir, 'analise.json') });
   // A última pega o resumo, pulando a etapa que não gravou nada.
-  assert.match(plano[3].prompt, /Leia C:\\r\\W\\resumo\.md/);
+  assert.ok(plano[3].prompt.includes(`Leia ${path.join(dir, 'resumo.md')}`));
 });

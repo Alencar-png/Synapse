@@ -58,20 +58,31 @@ desktop/playwright-report/
 # Atalho criado pelo install.sh — aponta para esta máquina.
 /synapse
 
-# Environment & Secrets (AIOX)
+# Segredos e chaves
 .env.local
 .env.*.local
 *.key
 *.pem
 
-# Dependencies (AIOX)
+# Dependências e artefatos de build
 node_modules
-
-# Build & Logs (AIOX)
 dist/
 build/
 logs/
 
-# AIOX Local (AIOX)
-.aiox-core/local/
-.aiox/install-log.txt
+# Ferramental de agentes de IA.
+#
+# São as configurações de quem desenvolve — regras, personas e skills de
+# Claude Code, Cursor, Gemini, Codex e afins. Ficam na máquina de propósito:
+# não são o Synapse, mudam por preferência de cada um, e versioná-las sepulta
+# o projeto (eram 1.382 dos 1.492 arquivos rastreados). Quem clona quer o app
+# e o motor de transcrição, não o andaime de quem os escreveu.
+.aiox-core/
+.aiox/
+.claude/
+.codex/
+.cursor/
+.gemini/
+.kimi/
+.antigravity/
+.github/agents/

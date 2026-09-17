@@ -1,8 +1,16 @@
 {
   "mcpServers": {
+    "synapse": {
+      "command": "node",
+      "args": [
+        "mcp-synapse/server.js"
+      ]
+    },
     "obs": {
       "command": "node",
-      "args": ["mcp-obs/server.js"],
+      "args": [
+        "mcp-obs/server.js"
+      ],
       "env": {
         "OBS_HOST": "127.0.0.1",
         "OBS_PORT": "4455",

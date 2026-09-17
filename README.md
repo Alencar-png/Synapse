@@ -228,6 +228,34 @@ variável de ambiente (veja [`.env.example`](.env.example)).
 
 ---
 
+## Ler o Synapse de fora: o servidor MCP
+
+O workspace não fica trancado no app. O servidor em
+[`mcp-synapse/`](mcp-synapse/README.md) abre projetos, reuniões, análises,
+transcrições e o Kanban como ferramentas de **Model Context Protocol** — e o
+Claude Code, com ele registrado, responde sobre as suas reuniões sem que
+ninguém abra o app nem cole transcrição em lugar nenhum.
+
+Já vem configurado em [`.mcp.json`](.mcp.json): abrir esta pasta no Claude Code
+basta. Ele descobre a pasta de saída sozinho, lendo o mesmo `settings.json` que
+o app lê.
+
+**Só lê.** Nenhuma ferramenta cria, renomeia ou apaga.
+
+| Pergunta | O caminho |
+|----------|-----------|
+| "Do que tratou a última reunião do projeto X?" | `synapse_list_meetings` → `synapse_get_meeting` |
+| "O que já foi dito sobre precificação?" | `synapse_search` → `synapse_read_transcript` |
+| "O que está pendente comigo?" | `synapse_list_tasks` |
+
+`synapse_get_meeting` devolve a **análise** já extraída — visão geral,
+decisões, riscos, tarefas e pendências —, que responde quase tudo por uma
+fração do custo de ler a transcrição. A transcrição sai paginada e a busca
+devolve trechos: uma reunião de duas horas tem 150 KB e três mil falas, e
+despejá-la inteira queimaria o contexto de quem perguntou.
+
+---
+
 ## Solução de problemas
 
 | Sintoma | O que fazer |
@@ -285,6 +313,11 @@ desktop/                   # app Electron (Synapse) — veja desktop/README.md
 ├── unicode-path.js        # caminhos com acento nas duas formas do Unicode
 ├── prompts/               # prompts de extração e documentos, fora do código
 └── renderer/              # interface
+
+mcp-synapse/               # servidor MCP de leitura — veja mcp-synapse/README.md
+├── server.js              # as sete ferramentas, em JSON-RPC por stdio
+├── tools.js               # a leitura do workspace, com paginação e busca
+└── workspace-path.js      # acha a pasta de saída sem Electron
 
 mcp-obs/                   # servidor MCP do OBS Studio — veja mcp-obs/README.md
 ├── server.js              # as ferramentas de gravação, em JSON-RPC por stdio
